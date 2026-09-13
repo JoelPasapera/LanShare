@@ -66,12 +66,22 @@ $global:MimeTypes = @{
 }
 
 # --- RESOLUCION NATIVA WIN32 ANTI-JUNCTION / SYMLINK / TOCTOU + PICKER MODERNO ---
-if (-not ([System.Management.Automation.PSTypeName]'NativePath').Type) {
+# La guarda comprueba el ULTIMO tipo definido: asi, si una version anterior del
+# script ya cargo NativePath en esta sesion, el error se detecta y se avisa en
+# vez de correr con clases desactualizadas (los tipos no se pueden recargar).
+if (-not ([System.Management.Automation.PSTypeName]'ClientRegistry').Type) {
+    try {
     Add-Type -TypeDefinition @"
     using System;
     using System.Text;
     using System.Runtime.InteropServices;
     using Microsoft.Win32.SafeHandles;
+    using System.Collections.Generic;
+    using System.Collections.Concurrent;
+    using System.Net;
+    using System.Net.Sockets;
+    using System.Threading;
+    using System.Text.RegularExpressions;
 
     public static class NativePath {
         private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
@@ -221,7 +231,342 @@ if (-not ([System.Management.Automation.PSTypeName]'NativePath').Type) {
             [MarshalAs(UnmanagedType.LPStruct)] Guid riid,
             out IShellItem ppv);
     }
+
+    // Campos publicos (no propiedades) para poder pasarlos por ref a Interlocked.
+    public class ClientInfo {
+        public string Ip = "";
+        public string UserAgent = "";
+        public string AcceptLanguage = "";
+        public string ChUa = "";
+        public string ChPlatform = "";
+        public string ChMobile = "";
+        public string ChModel = "";
+        public string HostName = "";
+        public string Mac = "";
+        public string Vendor = "";
+        public bool   MacRandomized = false;
+        public string DeviceLabel = "Desconocido";
+        public string BrowserLabel = "Desconocido";
+        public long   RequestCount = 0;
+        public long   BytesSent = 0;
+        public long   FirstSeenTicks = 0;
+        public long   LastSeenTicks = 0;
+        public int    ResolveState = 0; // 0 pendiente, 1 en curso, 2 resuelto
+    }
+
+    // Estado compartido entre todos los runspaces worker. Al ser un tipo estatico
+    // del AppDomain, no hace falta inyectarlo como argumento en cada peticion.
+    public static class ClientRegistry {
+
+        [DllImport("iphlpapi.dll", ExactSpelling = true)]
+        private static extern int SendARP(uint destIp, uint srcIp, byte[] macAddr, ref uint macAddrLen);
+
+        private static readonly ConcurrentDictionary<string, ClientInfo> _map =
+            new ConcurrentDictionary<string, ClientInfo>(StringComparer.Ordinal);
+
+        private static readonly Dictionary<string, string> _oui =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // ---------- API publica ----------
+
+        public static void SetVendorTable(System.Collections.IDictionary table) {
+            lock (_oui) {
+                _oui.Clear();
+                if (table == null) return;
+                foreach (System.Collections.DictionaryEntry e in table) {
+                    string k = Convert.ToString(e.Key);
+                    if (k == null) continue;
+                    k = k.Replace(":", "").Replace("-", "").Replace(".", "").Trim().ToUpperInvariant();
+                    if (k.Length >= 6) _oui[k.Substring(0, 6)] = Convert.ToString(e.Value);
+                }
+            }
+        }
+
+        public static int VendorCount { get { lock (_oui) { return _oui.Count; } } }
+
+        public static void Track(string ip, string ua, string lang,
+                                 string chUa, string chPlatform, string chMobile,
+                                 string chModel, long bytes) {
+            if (string.IsNullOrEmpty(ip)) return;
+
+            ClientInfo ci;
+            if (!_map.TryGetValue(ip, out ci)) {
+                ClientInfo fresh = new ClientInfo();
+                fresh.Ip = ip;
+                fresh.FirstSeenTicks = DateTime.UtcNow.Ticks;
+                ci = _map.GetOrAdd(ip, fresh);
+            }
+
+            Interlocked.Increment(ref ci.RequestCount);
+            if (bytes > 0) Interlocked.Add(ref ci.BytesSent, bytes);
+            Interlocked.Exchange(ref ci.LastSeenTicks, DateTime.UtcNow.Ticks);
+
+            // El parseo de UA solo corre cuando cambia la cadena, no en cada peticion.
+            if (!string.IsNullOrEmpty(ua) && !string.Equals(ci.UserAgent, ua, StringComparison.Ordinal)) {
+                ci.UserAgent   = ua;
+                ci.DeviceLabel = ParseDevice(ua);
+                ci.BrowserLabel= ParseBrowser(ua);
+            }
+            if (!string.IsNullOrEmpty(lang))       ci.AcceptLanguage = lang;
+            if (!string.IsNullOrEmpty(chUa))       ci.ChUa           = chUa;
+            if (!string.IsNullOrEmpty(chPlatform)) ci.ChPlatform     = chPlatform;
+            if (!string.IsNullOrEmpty(chMobile))   ci.ChMobile       = chMobile;
+            if (!string.IsNullOrEmpty(chModel))    ci.ChModel        = chModel;
+
+            QueueResolve(ci);
+        }
+
+        public static ClientInfo[] Snapshot() {
+            List<ClientInfo> list = new List<ClientInfo>(_map.Values);
+            return list.ToArray();
+        }
+
+        public static void Clear() { _map.Clear(); }
+
+        public static void ResetResolution() {
+            foreach (ClientInfo ci in _map.Values) {
+                Interlocked.Exchange(ref ci.ResolveState, 0);
+                QueueResolve(ci);
+            }
+        }
+
+        // ---------- Enriquecimiento fuera de la ruta de peticion ----------
+
+        private static void QueueResolve(ClientInfo ci) {
+            // Un unico intento por cliente: CAS 0 -> 1 gana la carrera.
+            if (Interlocked.CompareExchange(ref ci.ResolveState, 1, 0) != 0) return;
+            ThreadPool.QueueUserWorkItem(ResolveWorker, ci);
+        }
+
+        private static void ResolveWorker(object state) {
+            ClientInfo ci = (ClientInfo)state;
+            try {
+                IPAddress addr;
+                if (!IPAddress.TryParse(ci.Ip, out addr)) return;
+
+                // DNS inverso con tope de tiempo: sin el, un resolutor lento
+                // dejaria el hilo colgado varios segundos.
+                try {
+                    IAsyncResult ar = Dns.BeginGetHostEntry(ci.Ip, null, null);
+                    if (ar.AsyncWaitHandle.WaitOne(2000, false)) {
+                        IPHostEntry he = Dns.EndGetHostEntry(ar);
+                        if (he != null && !string.IsNullOrEmpty(he.HostName)) ci.HostName = he.HostName;
+                    }
+                } catch { }
+
+                // ARP: solo IPv4 y solo dentro del mismo segmento L2 (la LAN).
+                if (addr.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(addr)) {
+                    try {
+                        byte[] raw = addr.GetAddressBytes();
+                        uint dest = (uint)(raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24));
+                        byte[] mac = new byte[6];
+                        uint len = 6;
+                        if (SendARP(dest, 0, mac, ref len) == 0 && len >= 6) {
+                            ci.Mac = string.Format("{0:X2}:{1:X2}:{2:X2}:{3:X2}:{4:X2}:{5:X2}",
+                                                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                            // Bit 1 del primer octeto = direccion administrada localmente,
+                            // es decir MAC aleatoria de privacidad (iOS/Android modernos).
+                            ci.MacRandomized = (mac[0] & 0x02) != 0;
+
+                            string oui = string.Format("{0:X2}{1:X2}{2:X2}", mac[0], mac[1], mac[2]);
+                            string vendor = null;
+                            lock (_oui) { _oui.TryGetValue(oui, out vendor); }
+
+                            if (!string.IsNullOrEmpty(vendor))   ci.Vendor = vendor;
+                            else if (ci.MacRandomized)           ci.Vendor = "MAC aleatoria";
+                            else                                 ci.Vendor = "Desconocido";
+                        }
+                    } catch { }
+                }
+            } catch { }
+            finally {
+                Interlocked.Exchange(ref ci.ResolveState, 2);
+            }
+        }
+
+        // ---------- Parseo de User-Agent ----------
+
+        // Devuelve la version mayor que sigue al token, sin regex.
+        private static string VerAfter(string ua, string token) {
+            int i = ua.IndexOf(token, StringComparison.Ordinal);
+            if (i < 0) return "";
+            i += token.Length;
+            int j = i;
+            while (j < ua.Length && (char.IsDigit(ua[j]) || ua[j] == '.')) j++;
+            string v = ua.Substring(i, j - i);
+            int dot = v.IndexOf('.');
+            return dot > 0 ? v.Substring(0, dot) : v;
+        }
+
+        private static bool Has(string ua, string token) {
+            return ua.IndexOf(token, StringComparison.Ordinal) >= 0;
+        }
+
+        private static string Join(string name, string ver) {
+            return ver.Length > 0 ? name + " " + ver : name;
+        }
+
+        public static string ParseBrowser(string ua) {
+            if (string.IsNullOrEmpty(ua)) return "Desconocido";
+            // El orden importa: Edge y Opera incluyen "Chrome/" en su UA.
+            if (Has(ua, "Edg/"))            return Join("Edge",              VerAfter(ua, "Edg/"));
+            if (Has(ua, "EdgA/"))           return Join("Edge Android",      VerAfter(ua, "EdgA/"));
+            if (Has(ua, "EdgiOS/"))         return Join("Edge iOS",          VerAfter(ua, "EdgiOS/"));
+            if (Has(ua, "OPR/"))            return Join("Opera",             VerAfter(ua, "OPR/"));
+            if (Has(ua, "SamsungBrowser/")) return Join("Samsung Internet",  VerAfter(ua, "SamsungBrowser/"));
+            if (Has(ua, "YaBrowser/"))      return Join("Yandex",            VerAfter(ua, "YaBrowser/"));
+            if (Has(ua, "Vivaldi/"))        return Join("Vivaldi",           VerAfter(ua, "Vivaldi/"));
+            if (Has(ua, "FxiOS/"))          return Join("Firefox iOS",       VerAfter(ua, "FxiOS/"));
+            if (Has(ua, "Firefox/"))        return Join("Firefox",           VerAfter(ua, "Firefox/"));
+            if (Has(ua, "CriOS/"))          return Join("Chrome iOS",        VerAfter(ua, "CriOS/"));
+            if (Has(ua, "Chrome/"))         return Join("Chrome",            VerAfter(ua, "Chrome/"));
+            if (Has(ua, "Version/") && Has(ua, "Safari/"))
+                                            return Join("Safari",            VerAfter(ua, "Version/"));
+            if (Has(ua, "curl/"))           return Join("curl",              VerAfter(ua, "curl/"));
+            if (Has(ua, "Wget"))            return "wget";
+            if (Has(ua, "PostmanRuntime"))  return "Postman";
+            if (Has(ua, "python-requests")) return "python-requests";
+            if (Has(ua, "PowerShell"))      return "PowerShell";
+            if (Has(ua, "Dart/"))           return "Dart/Flutter";
+            if (Has(ua, "okhttp"))          return "OkHttp (app nativa)";
+            return "Otro";
+        }
+
+        public static string ParseDevice(string ua) {
+            if (string.IsNullOrEmpty(ua)) return "Desconocido";
+
+            if (Has(ua, "Android")) {
+                Match mv = Regex.Match(ua, @"Android\s+([\d.]+)");
+                string ver = mv.Success ? mv.Groups[1].Value : "";
+                string model = "";
+                Match mm = Regex.Match(ua, @"Android[^;)]*;\s*(?:[a-z]{2}(?:-[a-zA-Z]{2})?;\s*)?([^;)]+?)\s*(?:Build/|\))");
+                if (mm.Success) model = mm.Groups[1].Value.Trim();
+                // "K" es el marcador congelado de la UA reducida de Chrome: no hay modelo.
+                if (model == "K" || model == "Android" || model.Length == 0)
+                    return Join("Android", ver);
+                return Join("Android", ver) + " \u00B7 " + model;
+            }
+
+            if (Has(ua, "Windows Phone")) return "Windows Phone";
+
+            if (Has(ua, "iPhone")) {
+                Match m = Regex.Match(ua, @"CPU iPhone OS (\d+)[_.](\d+)");
+                return m.Success ? "iPhone \u00B7 iOS " + m.Groups[1].Value + "." + m.Groups[2].Value : "iPhone";
+            }
+            if (Has(ua, "iPad")) {
+                Match m = Regex.Match(ua, @"CPU OS (\d+)[_.](\d+)");
+                return m.Success ? "iPad \u00B7 iPadOS " + m.Groups[1].Value + "." + m.Groups[2].Value : "iPad";
+            }
+            if (Has(ua, "iPod")) return "iPod touch";
+
+            if (Has(ua, "CrOS")) return "ChromeOS";
+
+            if (Has(ua, "Windows NT 10.0")) return "Windows 10/11";
+            if (Has(ua, "Windows NT 6.3"))  return "Windows 8.1";
+            if (Has(ua, "Windows NT 6.2"))  return "Windows 8";
+            if (Has(ua, "Windows NT 6.1"))  return "Windows 7";
+            if (Has(ua, "Windows NT"))      return "Windows (antiguo)";
+
+            if (Has(ua, "Mac OS X")) {
+                Match m = Regex.Match(ua, @"Mac OS X (\d+)[_.](\d+)");
+                return m.Success ? "macOS " + m.Groups[1].Value + "." + m.Groups[2].Value : "macOS";
+            }
+
+            if (Has(ua, "Android TV"))  return "Android TV";
+            if (Has(ua, "SMART-TV") || Has(ua, "Tizen")) return "Smart TV";
+            if (Has(ua, "PlayStation")) return "PlayStation";
+            if (Has(ua, "Nintendo"))    return "Nintendo";
+
+            if (Has(ua, "Linux") || Has(ua, "X11")) return "Linux";
+            return "Desconocido";
+        }
+    }
 "@
+    } catch {
+        Write-Host "ERROR al compilar los tipos nativos:" -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Red
+        Write-Host "Si ya ejecutaste una version anterior en esta misma consola, abre una nueva ventana de PowerShell: los tipos cargados no se pueden reemplazar." -ForegroundColor Yellow
+        return
+    }
+}
+
+# --- TABLA OUI (MAC -> FABRICANTE) ---
+# Conjunto minimo y deliberadamente conservador: solo prefijos de alta confianza.
+# La base completa de IEEE son ~35.000 entradas y no tiene sentido embeberla.
+# Para cobertura real, descarga https://standards-oui.ieee.org/oui/oui.txt y
+# dejalo como "oui.txt" junto a este script: se carga solo al arrancar.
+$global:OuiTable = @{
+    # Virtualizacion y contenedores
+    "080027" = "Oracle VirtualBox"
+    "0A0027" = "VirtualBox (Host-Only)"
+    "005056" = "VMware"
+    "000C29" = "VMware"
+    "000569" = "VMware"
+    "001C14" = "VMware"
+    "00155D" = "Microsoft Hyper-V"
+    "525400" = "QEMU / KVM"
+    "0242AC" = "Docker"
+    # SBC e IoT
+    "B827EB" = "Raspberry Pi Foundation"
+    "DCA632" = "Raspberry Pi Trading"
+    "E45F01" = "Raspberry Pi Trading"
+    "28CDC1" = "Raspberry Pi Trading"
+    "240AC4" = "Espressif (ESP32)"
+    "30AEA4" = "Espressif (ESP32)"
+    "84F3EB" = "Espressif (ESP32)"
+    "A4CF12" = "Espressif (ESP32)"
+    "7C9EBD" = "Espressif (ESP32)"
+    "ECFABC" = "Espressif (ESP32)"
+    # Fabricantes comunes
+    "001B63" = "Apple"
+    "3C15C2" = "Apple"
+    "784F43" = "Apple"
+    "A483E7" = "Apple"
+    "ACBC32" = "Apple"
+    "DCA904" = "Apple"
+    "F01898" = "Apple"
+    "F45C89" = "Apple"
+    "00E04C" = "Realtek"
+    "50C7BF" = "TP-Link"
+    "24A43C" = "Ubiquiti"
+    "802AA8" = "Ubiquiti"
+}
+
+function Import-OuiFile {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [System.IO.File]::Exists($Path)) { return 0 }
+
+    $table = @{}
+    $rx = [regex]'^\s*([0-9A-Fa-f]{2})-([0-9A-Fa-f]{2})-([0-9A-Fa-f]{2})\s+\(hex\)\s+(.+?)\s*$'
+    $reader = $null
+    try {
+        $reader = New-Object System.IO.StreamReader($Path)
+        while ($null -ne ($linea = $reader.ReadLine())) {
+            $m = $rx.Match($linea)
+            if ($m.Success) {
+                $table[($m.Groups[1].Value + $m.Groups[2].Value + $m.Groups[3].Value).ToUpperInvariant()] = $m.Groups[4].Value
+            }
+        }
+    } catch {
+        return 0
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+    }
+
+    # La tabla integrada queda como respaldo para lo que el archivo no cubra.
+    foreach ($k in $global:OuiTable.Keys) {
+        if (-not $table.ContainsKey($k)) { $table[$k] = $global:OuiTable[$k] }
+    }
+    [ClientRegistry]::SetVendorTable($table)
+    return $table.Count
+}
+
+[ClientRegistry]::SetVendorTable($global:OuiTable)
+$script:ouiSource = "tabla integrada"
+if ($PSScriptRoot) {
+    $ouiPath = [System.IO.Path]::Combine($PSScriptRoot, "oui.txt")
+    $loaded = Import-OuiFile -Path $ouiPath
+    if ($loaded -gt 0) { $script:ouiSource = "oui.txt ($loaded entradas)" }
 }
 
 # --- FUNCIONES AUXILIARES Y ESTADO COMPARTIDO ---
@@ -295,14 +640,14 @@ $script:serverState = [hashtable]::Synchronized(@{
 # --- INTERFAZ GRAFICA ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Servidor Web Pro - Hardened & Multi-Threaded"
-$form.Size = New-Object System.Drawing.Size(680, 668)
+$form.Size = New-Object System.Drawing.Size(900, 680)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
 
 $labelPermiso = New-Object System.Windows.Forms.Label
 $labelPermiso.Location = New-Object System.Drawing.Point(20, 15)
-$labelPermiso.Size = New-Object System.Drawing.Size(350, 20)
+$labelPermiso.Size = New-Object System.Drawing.Size(400, 20)
 $labelPermiso.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 
 if ($esAdmin) {
@@ -315,7 +660,7 @@ if ($esAdmin) {
 $form.Controls.Add($labelPermiso)
 
 $btnEscalar = New-Object System.Windows.Forms.Button
-$btnEscalar.Location = New-Object System.Drawing.Point(490, 10)
+$btnEscalar.Location = New-Object System.Drawing.Point(710, 10)
 $btnEscalar.Size = New-Object System.Drawing.Size(150, 25)
 $btnEscalar.Text = "Escalar Privilegios"
 $btnEscalar.Enabled = -not $esAdmin
@@ -343,13 +688,13 @@ $form.Controls.Add($btnEscalar)
 
 $line = New-Object System.Windows.Forms.Label
 $line.Location = New-Object System.Drawing.Point(20, 40)
-$line.Size = New-Object System.Drawing.Size(620, 2)
+$line.Size = New-Object System.Drawing.Size(840, 2)
 $line.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
 $form.Controls.Add($line)
 
 $gbModo = New-Object System.Windows.Forms.GroupBox
 $gbModo.Location = New-Object System.Drawing.Point(20, 50)
-$gbModo.Size = New-Object System.Drawing.Size(620, 80)
+$gbModo.Size = New-Object System.Drawing.Size(840, 80)
 $gbModo.Text = "Alcance del Servidor"
 
 $rbLocal = New-Object System.Windows.Forms.RadioButton
@@ -367,9 +712,9 @@ $gbModo.Controls.Add($rbLAN)
 
 $chkCors = New-Object System.Windows.Forms.CheckBox
 $chkCors.Location = New-Object System.Drawing.Point(15, 48)
-$chkCors.Size = New-Object System.Drawing.Size(580, 22)
-$chkCors.Text = "Habilitar CORS abierto (Access-Control-Allow-Origin: *) - solo si tu app lo necesita"
-$chkCors.Checked = $false
+$chkCors.Size = New-Object System.Drawing.Size(600, 22)
+$chkCors.Text = "Habilitar CORS abierto (Access-Control-Allow-Origin: *)"
+$chkCors.Checked = $true
 $gbModo.Controls.Add($chkCors)
 
 $form.Controls.Add($gbModo)
@@ -382,12 +727,12 @@ $form.Controls.Add($labelRuta)
 
 $txtRuta = New-Object System.Windows.Forms.TextBox
 $txtRuta.Location = New-Object System.Drawing.Point(20, 157)
-$txtRuta.Size = New-Object System.Drawing.Size(370, 23)
+$txtRuta.Size = New-Object System.Drawing.Size(590, 23)
 if ($PSScriptRoot) { $txtRuta.Text = $PSScriptRoot } else { $txtRuta.Text = "" }
 $form.Controls.Add($txtRuta)
 
 $btnBrowse = New-Object System.Windows.Forms.Button
-$btnBrowse.Location = New-Object System.Drawing.Point(400, 155)
+$btnBrowse.Location = New-Object System.Drawing.Point(620, 155)
 $btnBrowse.Size = New-Object System.Drawing.Size(90, 27)
 $btnBrowse.Text = "Examinar..."
 $btnBrowse.Add_Click({
@@ -400,20 +745,20 @@ $btnBrowse.Add_Click({
 $form.Controls.Add($btnBrowse)
 
 $labelPuerto = New-Object System.Windows.Forms.Label
-$labelPuerto.Location = New-Object System.Drawing.Point(505, 137)
+$labelPuerto.Location = New-Object System.Drawing.Point(725, 137)
 $labelPuerto.Size = New-Object System.Drawing.Size(80, 18)
 $labelPuerto.Text = "Puerto TCP:"
 $form.Controls.Add($labelPuerto)
 
 $txtPuerto = New-Object System.Windows.Forms.TextBox
-$txtPuerto.Location = New-Object System.Drawing.Point(505, 157)
+$txtPuerto.Location = New-Object System.Drawing.Point(725, 157)
 $txtPuerto.Size = New-Object System.Drawing.Size(135, 23)
 $txtPuerto.Text = "8080"
 $form.Controls.Add($txtPuerto)
 
 $btnStart = New-Object System.Windows.Forms.Button
 $btnStart.Location = New-Object System.Drawing.Point(20, 193)
-$btnStart.Size = New-Object System.Drawing.Size(620, 38)
+$btnStart.Size = New-Object System.Drawing.Size(840, 38)
 $btnStart.Text = "Iniciar Servidor"
 $btnStart.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
 $btnStart.ForeColor = [System.Drawing.Color]::White
@@ -422,12 +767,12 @@ $form.Controls.Add($btnStart)
 
 $gbEstado = New-Object System.Windows.Forms.GroupBox
 $gbEstado.Location = New-Object System.Drawing.Point(20, 240)
-$gbEstado.Size = New-Object System.Drawing.Size(620, 100)
+$gbEstado.Size = New-Object System.Drawing.Size(840, 100)
 $gbEstado.Text = "Estado y Direcciones de Acceso"
 
 $txtEstadoInfo = New-Object System.Windows.Forms.TextBox
 $txtEstadoInfo.Location = New-Object System.Drawing.Point(15, 22)
-$txtEstadoInfo.Size = New-Object System.Drawing.Size(430, 68)
+$txtEstadoInfo.Size = New-Object System.Drawing.Size(650, 68)
 $txtEstadoInfo.Multiline = $true
 $txtEstadoInfo.ReadOnly = $true
 $txtEstadoInfo.ScrollBars = "Vertical"
@@ -436,7 +781,7 @@ $txtEstadoInfo.Font = New-Object System.Drawing.Font("Consolas", 8.5)
 $gbEstado.Controls.Add($txtEstadoInfo)
 
 $btnCopyLAN = New-Object System.Windows.Forms.Button
-$btnCopyLAN.Location = New-Object System.Drawing.Point(455, 30)
+$btnCopyLAN.Location = New-Object System.Drawing.Point(675, 30)
 $btnCopyLAN.Size = New-Object System.Drawing.Size(150, 45)
 $btnCopyLAN.Text = "Copiar URL LAN"
 $btnCopyLAN.Enabled = $false
@@ -460,23 +805,256 @@ $btnCopyLAN.Add_Click({
 $gbEstado.Controls.Add($btnCopyLAN)
 $form.Controls.Add($gbEstado)
 
-$labelConsole = New-Object System.Windows.Forms.Label
-$labelConsole.Location = New-Object System.Drawing.Point(20, 348)
-$labelConsole.Size = New-Object System.Drawing.Size(300, 18)
-$labelConsole.Text = "Registro de Telemetria (Live Logs):"
-$labelConsole.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
-$form.Controls.Add($labelConsole)
+# =====================================================================
+#  PESTANAS: REGISTRO + CLIENTES
+# =====================================================================
+$tabs = New-Object System.Windows.Forms.TabControl
+$tabs.Location = New-Object System.Drawing.Point(20, 348)
+$tabs.Size = New-Object System.Drawing.Size(840, 275)
+
+$tabLog = New-Object System.Windows.Forms.TabPage
+$tabLog.Text = "Registro de Telemetria"
+$tabLog.UseVisualStyleBackColor = $true
 
 $txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Location = New-Object System.Drawing.Point(20, 368)
-$txtLog.Size = New-Object System.Drawing.Size(620, 245)
+$txtLog.Location = New-Object System.Drawing.Point(6, 6)
+$txtLog.Size = New-Object System.Drawing.Size(820, 235)
 $txtLog.Multiline = $true
 $txtLog.ReadOnly = $true
 $txtLog.ScrollBars = "Vertical"
 $txtLog.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $txtLog.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
 $txtLog.Font = New-Object System.Drawing.Font("Consolas", 8.5)
-$form.Controls.Add($txtLog)
+$tabLog.Controls.Add($txtLog)
+$tabs.TabPages.Add($tabLog)
+
+$tabClientes = New-Object System.Windows.Forms.TabPage
+$tabClientes.Text = "Clientes conectados"
+$tabClientes.UseVisualStyleBackColor = $true
+
+$lvClientes = New-Object System.Windows.Forms.ListView
+$lvClientes.Location = New-Object System.Drawing.Point(6, 6)
+$lvClientes.Size = New-Object System.Drawing.Size(820, 128)
+$lvClientes.View = [System.Windows.Forms.View]::Details
+$lvClientes.FullRowSelect = $true
+$lvClientes.GridLines = $true
+$lvClientes.MultiSelect = $false
+$lvClientes.HideSelection = $false
+$lvClientes.Font = New-Object System.Drawing.Font("Consolas", 8.5)
+[void]$lvClientes.Columns.Add("IP", 105)
+[void]$lvClientes.Columns.Add("Host (rDNS)", 125)
+[void]$lvClientes.Columns.Add("MAC", 125)
+[void]$lvClientes.Columns.Add("Fabricante", 110)
+[void]$lvClientes.Columns.Add("Dispositivo", 115)
+[void]$lvClientes.Columns.Add("Navegador", 100)
+[void]$lvClientes.Columns.Add("Pet.", 45)
+[void]$lvClientes.Columns.Add("Ultima", 70)
+$tabClientes.Controls.Add($lvClientes)
+
+$btnReId = New-Object System.Windows.Forms.Button
+$btnReId.Location = New-Object System.Drawing.Point(6, 140)
+$btnReId.Size = New-Object System.Drawing.Size(115, 26)
+$btnReId.Text = "Re-identificar"
+$btnReId.Add_Click({
+    [ClientRegistry]::ResetResolution()
+    $script:logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [INFO]`r`nRe-resolviendo rDNS y ARP de todos los clientes.`r`n")
+})
+$tabClientes.Controls.Add($btnReId)
+
+$btnLimpiarClientes = New-Object System.Windows.Forms.Button
+$btnLimpiarClientes.Location = New-Object System.Drawing.Point(127, 140)
+$btnLimpiarClientes.Size = New-Object System.Drawing.Size(115, 26)
+$btnLimpiarClientes.Text = "Limpiar lista"
+$btnLimpiarClientes.Add_Click({
+    [ClientRegistry]::Clear()
+    $lvClientes.Items.Clear()
+    $script:clientRows.Clear()
+    $txtClienteDetalle.Text = ""
+})
+$tabClientes.Controls.Add($btnLimpiarClientes)
+
+$btnExportClientes = New-Object System.Windows.Forms.Button
+$btnExportClientes.Location = New-Object System.Drawing.Point(248, 140)
+$btnExportClientes.Size = New-Object System.Drawing.Size(115, 26)
+$btnExportClientes.Text = "Exportar CSV"
+$btnExportClientes.Add_Click({
+    $snapshot = [ClientRegistry]::Snapshot()
+    if ($snapshot.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No hay clientes registrados.", "Exportar",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+        return
+    }
+    $dlg = New-Object System.Windows.Forms.SaveFileDialog
+    $dlg.Filter = "CSV (*.csv)|*.csv"
+    $dlg.FileName = "clientes_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+    if ($dlg.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+
+    try {
+        $filas = foreach ($c in $snapshot) {
+            [PSCustomObject]@{
+                IP           = $c.Ip
+                Host         = $c.HostName
+                MAC          = $c.Mac
+                MacAleatoria = $c.MacRandomized
+                Fabricante   = $c.Vendor
+                Dispositivo  = $c.DeviceLabel
+                Navegador    = $c.BrowserLabel
+                Idioma       = $c.AcceptLanguage
+                Peticiones   = $c.RequestCount
+                Bytes        = $c.BytesSent
+                Primera      = (Get-ClientLocalTime $c.FirstSeenTicks)
+                Ultima       = (Get-ClientLocalTime $c.LastSeenTicks)
+                UserAgent    = $c.UserAgent
+            }
+        }
+        $filas | Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No se pudo exportar: $($_.Exception.Message)", "Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
+})
+$tabClientes.Controls.Add($btnExportClientes)
+
+$lblOui = New-Object System.Windows.Forms.Label
+$lblOui.Location = New-Object System.Drawing.Point(372, 145)
+$lblOui.Size = New-Object System.Drawing.Size(454, 18)
+$lblOui.ForeColor = [System.Drawing.Color]::DimGray
+$lblOui.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblOui.Text = "Fabricante: $($script:ouiSource). Coloca oui.txt (IEEE) junto al script para cobertura completa."
+$tabClientes.Controls.Add($lblOui)
+
+$txtClienteDetalle = New-Object System.Windows.Forms.TextBox
+$txtClienteDetalle.Location = New-Object System.Drawing.Point(6, 172)
+$txtClienteDetalle.Size = New-Object System.Drawing.Size(820, 69)
+$txtClienteDetalle.Multiline = $true
+$txtClienteDetalle.ReadOnly = $true
+$txtClienteDetalle.ScrollBars = "Vertical"
+$txtClienteDetalle.BackColor = [System.Drawing.Color]::FromArgb(248, 248, 248)
+$txtClienteDetalle.Font = New-Object System.Drawing.Font("Consolas", 8.5)
+$txtClienteDetalle.Text = "Selecciona un cliente para ver su detalle completo."
+$tabClientes.Controls.Add($txtClienteDetalle)
+
+$tabs.TabPages.Add($tabClientes)
+$form.Controls.Add($tabs)
+
+# --- FORMATEO Y REFRESCO DEL PANEL DE CLIENTES ---
+$script:clientRows = @{}
+
+function Get-ClientLocalTime {
+    param([long]$Ticks)
+    if ($Ticks -le 0) { return "-" }
+    return ([DateTime]::new($Ticks, [System.DateTimeKind]::Utc)).ToLocalTime().ToString("HH:mm:ss")
+}
+
+function Format-ByteSize {
+    param([long]$Bytes)
+    if ($Bytes -lt 1024)          { return "$Bytes B" }
+    if ($Bytes -lt 1048576)       { return "{0:N1} KB" -f ($Bytes / 1024) }
+    if ($Bytes -lt 1073741824)    { return "{0:N1} MB" -f ($Bytes / 1048576) }
+    return "{0:N2} GB" -f ($Bytes / 1073741824)
+}
+
+function Format-Elapsed {
+    param([long]$Ticks)
+    if ($Ticks -le 0) { return "-" }
+    $secs = [int]([DateTime]::UtcNow - [DateTime]::new($Ticks, [System.DateTimeKind]::Utc)).TotalSeconds
+    if ($secs -lt 2)    { return "ahora" }
+    if ($secs -lt 60)   { return "${secs}s" }
+    if ($secs -lt 3600) { return "$([int]($secs / 60))m" }
+    return "$([int]($secs / 3600))h"
+}
+
+function Show-ClientDetail {
+    if ($lvClientes.SelectedItems.Count -eq 0) { return }
+    $ip = $lvClientes.SelectedItems[0].Tag
+    $c = $null
+    foreach ($x in [ClientRegistry]::Snapshot()) { if ($x.Ip -eq $ip) { $c = $x; break } }
+    if ($null -eq $c) { return }
+
+    $macLinea = if ([string]::IsNullOrEmpty($c.Mac)) {
+        "(sin respuesta ARP: fuera del segmento local o cliente inactivo)"
+    } elseif ($c.MacRandomized) {
+        "$($c.Mac)  [ALEATORIA - privacidad del dispositivo, el OUI no identifica al fabricante]"
+    } else {
+        "$($c.Mac)  [$($c.Vendor)]"
+    }
+
+    $hints = @()
+    if ($c.ChUa)       { $hints += "ua=$($c.ChUa)" }
+    if ($c.ChPlatform) { $hints += "plataforma=$($c.ChPlatform)" }
+    if ($c.ChMobile)   { $hints += "movil=$($c.ChMobile)" }
+    if ($c.ChModel)    { $hints += "modelo=$($c.ChModel)" }
+    $hintsLinea = if ($hints.Count -gt 0) { $hints -join "  |  " } else { "(no enviados: requieren contexto seguro, solo llegan por https o localhost)" }
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine("IP             : $($c.Ip)")
+    [void]$sb.AppendLine("Host (rDNS)    : $(if ($c.HostName) { $c.HostName } else { '(sin resolucion inversa)' })")
+    [void]$sb.AppendLine("MAC            : $macLinea")
+    [void]$sb.AppendLine("Dispositivo    : $($c.DeviceLabel)")
+    [void]$sb.AppendLine("Navegador      : $($c.BrowserLabel)")
+    [void]$sb.AppendLine("Idioma         : $(if ($c.AcceptLanguage) { $c.AcceptLanguage } else { '-' })")
+    [void]$sb.AppendLine("Client Hints   : $hintsLinea")
+    [void]$sb.AppendLine("Trafico        : $($c.RequestCount) peticiones  |  $(Format-ByteSize $c.BytesSent)")
+    [void]$sb.AppendLine("Visto          : primera $(Get-ClientLocalTime $c.FirstSeenTicks)  |  ultima $(Get-ClientLocalTime $c.LastSeenTicks)")
+    [void]$sb.AppendLine("User-Agent     : $(if ($c.UserAgent) { $c.UserAgent } else { '(vacio)' })")
+    $txtClienteDetalle.Text = $sb.ToString()
+}
+
+function Update-ClientList {
+    $snapshot = [ClientRegistry]::Snapshot()
+    $tabClientes.Text = if ($snapshot.Count -gt 0) { "Clientes conectados ($($snapshot.Count))" } else { "Clientes conectados" }
+    if ($snapshot.Count -eq 0) { return }
+
+    $lvClientes.BeginUpdate()
+    try {
+        foreach ($c in $snapshot) {
+            $item = $script:clientRows[$c.Ip]
+            if ($null -eq $item) {
+                $item = New-Object System.Windows.Forms.ListViewItem($c.Ip)
+                for ($i = 0; $i -lt 7; $i++) { [void]$item.SubItems.Add("") }
+                $item.Tag = $c.Ip
+                [void]$lvClientes.Items.Add($item)
+                $script:clientRows[$c.Ip] = $item
+            }
+
+            $host_ = if ($c.HostName) { ($c.HostName -split '\.')[0] } else { "..." }
+            $mac_  = if ($c.Mac) { $c.Mac } else { "..." }
+            $vend_ = if ($c.MacRandomized) { "MAC aleatoria" } elseif ($c.Vendor) { $c.Vendor } else { "..." }
+
+            $item.SubItems[1].Text = $host_
+            $item.SubItems[2].Text = $mac_
+            $item.SubItems[3].Text = $vend_
+            $item.SubItems[4].Text = $c.DeviceLabel
+            $item.SubItems[5].Text = $c.BrowserLabel
+            $item.SubItems[6].Text = [string]$c.RequestCount
+            $item.SubItems[7].Text = Format-Elapsed $c.LastSeenTicks
+
+            # Inactivo mas de 60 s: se atenua en vez de desaparecer, para no
+            # perder el historial de quien se conecto durante la sesion.
+            $idle = ([DateTime]::UtcNow - [DateTime]::new($c.LastSeenTicks, [System.DateTimeKind]::Utc)).TotalSeconds
+            $item.ForeColor = if ($idle -gt 60) { [System.Drawing.Color]::Gray } else { [System.Drawing.Color]::Black }
+        }
+    } finally {
+        $lvClientes.EndUpdate()
+    }
+
+    if ($lvClientes.SelectedItems.Count -gt 0) { Show-ClientDetail }
+}
+
+$lvClientes.Add_SelectedIndexChanged({ Show-ClientDetail })
+
+$clientsTimer = New-Object System.Windows.Forms.Timer
+$clientsTimer.Interval = 1500
+$clientsTimer.Add_Tick({
+    # Solo se repinta si la pestana esta a la vista.
+    if ($tabs.SelectedTab -eq $tabClientes) { Update-ClientList }
+    else { $tabClientes.Text = "Clientes conectados ($([ClientRegistry]::Snapshot().Count))" }
+})
+$clientsTimer.Start()
 
 # Drenaje por lotes: un solo AppendText por tick en vez de uno por mensaje,
 # con recorte del buffer para que la UI no se degrade en sesiones largas.
@@ -788,6 +1366,28 @@ $requestHandlerScript = {
         $logQueue.Enqueue("$ts [ERROR]`r`n$httpMethod $rawUrl - Client: $clientIP`r`nException [$($ex.GetType().FullName)]:`r`n$($ex.Message)`r`n")
     }
     finally {
+        # Registro del cliente: una sola escritura atomica por peticion. El
+        # enriquecimiento lento (rDNS, ARP) lo dispara ClientRegistry en el
+        # ThreadPool, nunca en este hilo.
+        try {
+            $ua    = ""
+            $lang  = ""
+            $chUa  = ""
+            $chPlt = ""
+            $chMob = ""
+            $chMod = ""
+            try {
+                $h = $request.Headers
+                $ua    = [string]$request.UserAgent
+                $lang  = [string]$h["Accept-Language"]
+                $chUa  = [string]$h["Sec-CH-UA"]
+                $chPlt = [string]$h["Sec-CH-UA-Platform"]
+                $chMob = [string]$h["Sec-CH-UA-Mobile"]
+                $chMod = [string]$h["Sec-CH-UA-Model"]
+            } catch { }
+            [ClientRegistry]::Track($clientIP, $ua, $lang, $chUa, $chPlt, $chMob, $chMod, $bytesSent)
+        } catch { }
+
         try { $context.Response.Close() } catch { }
     }
 }
@@ -995,6 +1595,12 @@ $btnStart.Add_Click({
     $script:serverState.Listener  = $listener
     $script:serverState.IsRunning = $true
 
+    # Cada sesion de servidor arranca con la lista de clientes en blanco.
+    [ClientRegistry]::Clear()
+    $lvClientes.Items.Clear()
+    $script:clientRows.Clear()
+    $txtClienteDetalle.Text = "Selecciona un cliente para ver su detalle completo."
+
     # --- Estado y firewall (solo despues de un Start() exitoso) ---
     $statusText = "Estado: Corriendo`r`n`r`nAcceso local:`r`nhttp://localhost:$puerto/"
 
@@ -1045,11 +1651,13 @@ $btnStart.Add_Click({
 
 $form.Add_FormClosing({
     $logTimer.Stop()
+    $clientsTimer.Stop()
     Stop-WebServer
 })
 
 [void]$form.ShowDialog()
 
 # ShowDialog no libera el formulario: la limpieza va aqui, no dentro de FormClosed.
-try { $logTimer.Dispose() } catch { }
-try { $form.Dispose() }     catch { }
+try { $logTimer.Dispose() }     catch { }
+try { $clientsTimer.Dispose() } catch { }
+try { $form.Dispose() }         catch { }
