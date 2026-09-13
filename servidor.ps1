@@ -1,113 +1,240 @@
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# --- CONFIGURACIÓN DE LA VENTANA (GUI) ---
+function Test-IsAdmin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+$esAdmin = Test-IsAdmin
+
+# --- CONFIGURACIÓN DE LA INTERFAZ ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Servidor Web PowerShell (Puerto 8080)"
-$form.Size = New-Object System.Drawing.Size(520, 240)
+$form.Text = "Servidor Web Pro - PowerShell"
+$form.Size = New-Object System.Drawing.Size(540, 320)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
 
-# Etiqueta de instrucción
-$label = New-Object System.Windows.Forms.Label
-$label.Location = New-Object System.Drawing.Point(20, 20)
-$label.Size = New-Object System.Drawing.Size(460, 20)
-$label.Text = "Selecciona la carpeta raíz de tu sitio web (con index.html):"
-$form.Controls.Add($label)
+# 1. Indicador de Permisos
+$labelPermiso = New-Object System.Windows.Forms.Label
+$labelPermiso.Location = New-Object System.Drawing.Point(20, 15)
+$labelPermiso.Size = New-Object System.Drawing.Size(320, 20)
+$labelPermiso.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 
-# Campo de texto para la ruta (Ahora predeterminado en C:\)
-$textBox = New-Object System.Windows.Forms.TextBox
-$textBox.Location = New-Object System.Drawing.Point(20, 50)
-$textBox.Size = New-Object System.Drawing.Size(360, 20)
-$textBox.Text = "C:\"
-$form.Controls.Add($textBox)
+if ($esAdmin) {
+    $labelPermiso.Text = "Permisos: Administrador (Elevado)"
+    $labelPermiso.ForeColor = [System.Drawing.Color]::DarkGreen
+} else {
+    $labelPermiso.Text = "Permisos: Usuario Estándar (Sin Administrador)"
+    $labelPermiso.ForeColor = [System.Drawing.Color]::DarkRed
+}
+$form.Controls.Add($labelPermiso)
 
-# Botón Buscar / Examinar
+$btnEscalar = New-Object System.Windows.Forms.Button
+$btnEscalar.Location = New-Object System.Drawing.Point(350, 10)
+$btnEscalar.Size = New-Object System.Drawing.Size(150, 25)
+$btnEscalar.Text = "Escalar Privilegios"
+$btnEscalar.Enabled = -not $esAdmin
+$btnEscalar.Add_Click({
+    if ($PSCommandPath) {
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+        $form.Close()
+    } else {
+        [System.Windows.Forms.MessageBox]::Show("Guarda el código en un archivo .ps1 para reabrirlo como Administrador.", "Aviso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    }
+})
+$form.Controls.Add($btnEscalar)
+
+$line = New-Object System.Windows.Forms.Label
+$line.Location = New-Object System.Drawing.Point(20, 40)
+$line.Size = New-Object System.Drawing.Size(480, 2)
+$line.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
+$form.Controls.Add($line)
+
+# 2. Selector de Ruta
+$labelRuta = New-Object System.Windows.Forms.Label
+$labelRuta.Location = New-Object System.Drawing.Point(20, 55)
+$labelRuta.Size = New-Object System.Drawing.Size(480, 20)
+$labelRuta.Text = "Carpeta raíz de la aplicación web:"
+$form.Controls.Add($labelRuta)
+
+$txtRuta = New-Object System.Windows.Forms.TextBox
+$txtRuta.Location = New-Object System.Drawing.Point(20, 78)
+$txtRuta.Size = New-Object System.Drawing.Size(370, 23)
+$txtRuta.Text = "C:\"
+$form.Controls.Add($txtRuta)
+
 $btnBrowse = New-Object System.Windows.Forms.Button
-$btnBrowse.Location = New-Object System.Drawing.Point(390, 48)
-$btnBrowse.Size = New-Object System.Drawing.Size(95, 25)
+$btnBrowse.Location = New-Object System.Drawing.Point(400, 76)
+$btnBrowse.Size = New-Object System.Drawing.Size(100, 27)
 $btnBrowse.Text = "Examinar..."
 $btnBrowse.Add_Click({
-    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-    $folderBrowser.SelectedPath = $textBox.Text
-    if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $textBox.Text = $folderBrowser.SelectedPath
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.SelectedPath = $txtRuta.Text
+    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtRuta.Text = $dialog.SelectedPath
     }
 })
 $form.Controls.Add($btnBrowse)
 
-# Botón Iniciar Servidor
+# 3. Puerto TCP
+$labelPuerto = New-Object System.Windows.Forms.Label
+$labelPuerto.Location = New-Object System.Drawing.Point(20, 118)
+$labelPuerto.Size = New-Object System.Drawing.Size(80, 20)
+$labelPuerto.Text = "Puerto TCP:"
+$form.Controls.Add($labelPuerto)
+
+$txtPuerto = New-Object System.Windows.Forms.TextBox
+$txtPuerto.Location = New-Object System.Drawing.Point(100, 115)
+$txtPuerto.Size = New-Object System.Drawing.Size(80, 23)
+$txtPuerto.Text = "8080"
+$form.Controls.Add($txtPuerto)
+
+# 4. Estado
+$labelEstado = New-Object System.Windows.Forms.Label
+$labelEstado.Location = New-Object System.Drawing.Point(20, 150)
+$labelEstado.Size = New-Object System.Drawing.Size(480, 20)
+$labelEstado.Text = "Estado: Detenido"
+$labelEstado.ForeColor = [System.Drawing.Color]::Red
+$labelEstado.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$form.Controls.Add($labelEstado)
+
+# 5. Botón Iniciar / Detener
 $btnStart = New-Object System.Windows.Forms.Button
-$btnStart.Location = New-Object System.Drawing.Point(20, 100)
-$btnStart.Size = New-Object System.Drawing.Size(465, 40)
-$btnStart.Text = "Iniciar Servidor en Puerto 8080"
+$btnStart.Location = New-Object System.Drawing.Point(20, 185)
+$btnStart.Size = New-Object System.Drawing.Size(480, 45)
+$btnStart.Text = "Iniciar Servidor y Abrir Puerto"
 $btnStart.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
 $btnStart.ForeColor = [System.Drawing.Color]::White
 $btnStart.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 
-$btnStart.Add_Click({
-    $ruta = $textBox.Text.Trim('"').Trim("'")
-    
-    if (-not (Test-Path $ruta -PathType Container)) {
-        [System.Windows.Forms.MessageBox]::Show("La carpeta especificada no existe.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return
-    }
+# --- ARQUITECTURA MULTIHILO (BackgroundWorker) ---
+$script:listener = $null
+$script:worker = New-Object System.ComponentModel.BackgroundWorker
+$script:worker.WorkerSupportsCancellation = $true
 
-    $form.Hide() # Ocultar ventana emergente
-    
-    # --- LÓGICA DEL SERVIDOR HTTP ---
-    $puerto = 8080
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add("http://localhost:$puerto/")
-    $listener.Start()
+$script:worker.Add_DoWork({
+    param($sender, $e)
+    $listener = $e.Argument.Listener
+    $basePath = $e.Argument.BasePath
 
-    Write-Host "`n==========================================" -ForegroundColor Cyan
-    Write-Host " Servidor Web Activo en http://localhost:$puerto/" -ForegroundColor Green
-    Write-Host " Carpeta origen: $ruta" -ForegroundColor White
-    Write-Host " Presiona Ctrl + C para detenerlo." -ForegroundColor Yellow
-    Write-Host "==========================================`n" -ForegroundColor Cyan
-
-    Start-Process "http://localhost:$puerto/"
-
-    try {
-        while ($listener.IsListening) {
+    while ($listener.IsListening -and -not $sender.CancellationPending) {
+        try {
+            # Bloqueo sincrónico seguro en el hilo secundario (sin consumo de CPU)
             $context = $listener.GetContext()
             $request = $context.Request
             $response = $context.Response
 
-            $relPath = $request.Url.LocalPath.TrimStart('/')
-            if ([string]::IsNullOrEmpty($relPath)) { $relPath = "index.html" }
+            $decodedPath = [System.Uri]::UnescapeDataString($request.Url.LocalPath).TrimStart('/')
+            if ([string]::IsNullOrEmpty($decodedPath)) { $decodedPath = "index.html" }
 
-            $filePath = Join-Path $ruta $relPath
+            $candidatePath = Join-Path $basePath $decodedPath
+            $fullPath = [System.IO.Path]::GetFullPath($candidatePath)
 
-            if (Test-Path $filePath -PathType Leaf) {
-                $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
+            # Prevención de Path Traversal
+            if ($fullPath.StartsWith($basePath, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path $fullPath -PathType Leaf)) {
+                $ext = [System.IO.Path]::GetExtension($fullPath).ToLower()
                 switch ($ext) {
-                    ".html" { $response.ContentType = "text/html; charset=utf-8" }
-                    ".css"  { $response.ContentType = "text/css" }
-                    ".js"   { $response.ContentType = "application/javascript" }
-                    ".png"  { $response.ContentType = "image/png" }
-                    ".jpg"  { $response.ContentType = "image/jpeg" }
-                    ".svg"  { $response.ContentType = "image/svg+xml" }
-                    ".json" { $response.ContentType = "application/json" }
-                    default { $response.ContentType = "application/octet-stream" }
+                    ".html"  { $response.ContentType = "text/html; charset=utf-8" }
+                    ".css"   { $response.ContentType = "text/css" }
+                    ".js"    { $response.ContentType = "application/javascript" }
+                    ".json"  { $response.ContentType = "application/json" }
+                    ".png"   { $response.ContentType = "image/png" }
+                    ".jpg"   { $response.ContentType = "image/jpeg" }
+                    ".svg"   { $response.ContentType = "image/svg+xml" }
+                    ".webp"  { $response.ContentType = "image/webp" }
+                    ".woff2" { $response.ContentType = "font/woff2" }
+                    default  { $response.ContentType = "application/octet-stream" }
                 }
 
-                $bytes = [System.IO.File]::ReadAllBytes($filePath)
+                $bytes = [System.IO.File]::ReadAllBytes($fullPath)
                 $response.ContentLength64 = $bytes.Length
                 $response.OutputStream.Write($bytes, 0, $bytes.Length)
             } else {
-                $response.StatusCode = 404
+                $response.StatusCode = 403
             }
             $response.Close()
+        } catch [System.Net.HttpListenerException], [System.ObjectDisposedException] {
+            # Ocurre cuando el hilo principal detiene/cierra el listener de forma ordenada
+            break
+        } catch {
+            # Evita caídas ante peticiones malformadas
         }
-    } finally {
-        $listener.Stop()
-        $form.Close()
     }
 })
+
+$btnStart.Add_Click({
+    if ($script:listener -and $script:listener.IsListening) {
+        # DETENER SERVIDOR
+        $script:worker.CancelAsync()
+        if ($script:listener) {
+            $script:listener.Stop()
+            $script:listener.Close()
+            $script:listener = $null
+        }
+        $labelEstado.Text = "Estado: Detenido"
+        $labelEstado.ForeColor = [System.Drawing.Color]::Red
+        $btnStart.Text = "Iniciar Servidor y Abrir Puerto"
+        $btnStart.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+        return
+    }
+
+    $rutaInput = $txtRuta.Text.Trim('"').Trim("'")
+    $puerto = $txtPuerto.Text.Trim()
+
+    if (-not (Test-Path $rutaInput -PathType Container)) {
+        [System.Windows.Forms.MessageBox]::Show("La ruta especificada no existe.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return
+    }
+
+    $basePath = [System.IO.Path]::GetFullPath($rutaInput)
+    if (-not $basePath.EndsWith([System.IO.Path]::DirectorySeparatorChar.ToString())) {
+        $basePath += [System.IO.Path]::DirectorySeparatorChar
+    }
+
+    if (Test-IsAdmin) {
+        $ruleName = "Permitir Puerto HTTP $puerto"
+        if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $puerto -Action Allow -Enabled True | Out-Null
+        }
+    }
+
+    try {
+        $script:listener = New-Object System.Net.HttpListener
+        $script:listener.Prefixes.Add("http://localhost:$puerto/")
+        $script:listener.Start()
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("No se pudo iniciar el servidor en el puerto $puerto.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return
+    }
+
+    # Desplegar el servidor en el BackgroundWorker sin congelar la ventana
+    $args = @{ Listener = $script:listener; BasePath = $basePath }
+    $script:worker.RunWorkerAsync($args)
+
+    $labelEstado.Text = "Estado: Corriendo en http://localhost:$puerto/"
+    $labelEstado.ForeColor = [System.Drawing.Color]::Green
+    $btnStart.Text = "Detener Servidor"
+    $btnStart.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+
+    Start-Process "http://localhost:$puerto/"
+})
+
 $form.Controls.Add($btnStart)
 
-# Mostrar la interfaz visual
+# Cierre limpio al salir de la aplicación
+$form.Add_FormClosing({
+    if ($script:worker.IsBusy) {
+        $script:worker.CancelAsync()
+    }
+    if ($script:listener -and $script:listener.IsListening) {
+        $script:listener.Stop()
+        $script:listener.Close()
+    }
+})
+
 [void]$form.ShowDialog()
