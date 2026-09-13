@@ -13,7 +13,7 @@ $esAdmin = Test-IsAdmin
 
 # --- CONFIGURACIÓN DE LA INTERFAZ ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Servidor Web Pro - PowerShell (SPA & Multi-Thread)"
+$form.Text = "Servidor Web Pro - PowerShell (Streaming & HTTP Range)"
 $form.Size = New-Object System.Drawing.Size(540, 320)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
@@ -112,7 +112,7 @@ $btnStart.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
 $btnStart.ForeColor = [System.Drawing.Color]::White
 $btnStart.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 
-# --- ARQUITECTURA MULTIHILO CON SPA FALLBACK ---
+# --- WORKER CONCURRENTE CON STREAMING Y HTTP RANGE ---
 $script:listener = $null
 $script:worker = New-Object System.ComponentModel.BackgroundWorker
 $script:worker.WorkerSupportsCancellation = $true
@@ -120,7 +120,8 @@ $script:worker.WorkerSupportsCancellation = $true
 $script:worker.Add_DoWork({
     param($sender, $e)
     $listener = $e.Argument.Listener
-    $basePath = $e.Argument.BasePath
+    $baseUri = $e.Argument.BaseUri
+    $rootPath = $e.Argument.RootPath
 
     while ($listener.IsListening -and -not $sender.CancellationPending) {
         try {
@@ -129,11 +130,26 @@ $script:worker.Add_DoWork({
             [System.Threading.ThreadPool]::QueueUserWorkItem({
                 param($state)
                 $ctx = $state.Context
-                $root = $state.BasePath
+                $baseUriObj = $state.BaseUri
+                $root = $state.RootPath
                 
                 try {
                     $request = $ctx.Request
                     $response = $ctx.Response
+
+                    # Headers CORS y Caché de Desarrollo
+                    $response.AddHeader("Access-Control-Allow-Origin", "*")
+                    $response.AddHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+                    $response.AddHeader("Access-Control-Allow-Headers", "*")
+                    $response.AddHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                    $response.AddHeader("Pragma", "no-cache")
+                    $response.AddHeader("Expires", "0")
+                    $response.AddHeader("Accept-Ranges", "bytes")
+
+                    if ($request.HttpMethod -eq "OPTIONS") {
+                        $response.StatusCode = 204
+                        return
+                    }
 
                     $decodedPath = [System.Uri]::UnescapeDataString($request.Url.LocalPath).TrimStart('/')
                     if ([string]::IsNullOrEmpty($decodedPath)) { $decodedPath = "index.html" }
@@ -141,23 +157,22 @@ $script:worker.Add_DoWork({
                     $candidatePath = Join-Path $root $decodedPath
                     $fullPath = [System.IO.Path]::GetFullPath($candidatePath)
 
+                    $candidateUri = New-Object System.Uri($fullPath)
+                    $isChildPath = $baseUriObj.IsBaseOf($candidateUri)
+
                     $fileToServe = $null
 
-                    # 1. Verificar si el archivo físico existe y respeta la raíz
-                    if ($fullPath.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path $fullPath -PathType Leaf)) {
+                    if ($isChildPath -and (Test-Path $fullPath -PathType Leaf)) {
                         $fileToServe = $fullPath
-                    } 
-                    # 2. Lógica SPA Fallback: Si no existe el archivo, no tiene extensión de recurso y existe index.html
-                    else {
-                        $requestedExtension = [System.IO.Path]::GetExtension($decodedPath)
+                    } else {
+                        $requestedExt = [System.IO.Path]::GetExtension($decodedPath)
                         $indexPath = Join-Path $root "index.html"
 
-                        if ([string]::IsNullOrEmpty($requestedExtension) -and (Test-Path $indexPath -PathType Leaf)) {
+                        if ([string]::IsNullOrEmpty($requestedExt) -and (Test-Path $indexPath -PathType Leaf)) {
                             $fileToServe = $indexPath
                         }
                     }
 
-                    # Servir archivo
                     if ($fileToServe) {
                         $ext = [System.IO.Path]::GetExtension($fileToServe).ToLower()
                         switch ($ext) {
@@ -167,15 +182,60 @@ $script:worker.Add_DoWork({
                             ".json"  { $response.ContentType = "application/json" }
                             ".png"   { $response.ContentType = "image/png" }
                             ".jpg"   { $response.ContentType = "image/jpeg" }
+                            ".mp4"   { $response.ContentType = "video/mp4" }
+                            ".webm"  { $response.ContentType = "video/webm" }
                             ".svg"   { $response.ContentType = "image/svg+xml" }
                             ".webp"  { $response.ContentType = "image/webp" }
                             ".woff2" { $response.ContentType = "font/woff2" }
                             default  { $response.ContentType = "application/octet-stream" }
                         }
 
-                        $bytes = [System.IO.File]::ReadAllBytes($fileToServe)
-                        $response.ContentLength64 = $bytes.Length
-                        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                        $fileStream = [System.IO.File]::OpenRead($fileToServe)
+                        $fileLength = $fileStream.Length
+                        $rangeHeader = $request.Headers["Range"]
+
+                        try {
+                            # --- PROCESAMIENTO DE HTTP RANGE (206 PARTIAL CONTENT) ---
+                            if (-not [string]::IsNullOrEmpty($rangeHeader) -and $rangeHeader -match "bytes=(\d*)-(\d*)") {
+                                $start = if ($matches[1]) { [long]$matches[1] } else { 0 }
+                                $end = if ($matches[2]) { [long]$matches[2] } else { $fileLength - 1 }
+
+                                if ($start -ge $fileLength -or $end -ge $fileLength -or $start -gt $end) {
+                                    $response.StatusCode = 416 # Range Not Satisfiable
+                                    $response.AddHeader("Content-Range", "bytes */$fileLength")
+                                    return
+                                }
+
+                                $response.StatusCode = 206 # Partial Content
+                                $contentLength = $end - $start + 1
+                                $response.ContentLength64 = $contentLength
+                                $response.AddHeader("Content-Range", "bytes $start-$end/$fileLength")
+
+                                if ($request.HttpMethod -eq "GET") {
+                                    $fileStream.Seek($start, [System.IO.SeekOrigin]::Begin) | Out-Null
+                                    $buffer = New-Object byte[] 65536 # Búfer de 64 KB
+                                    $bytesRemaining = $contentLength
+
+                                    while ($bytesRemaining -gt 0) {
+                                        $bytesToRead = [Math]::Min($buffer.Length, $bytesRemaining)
+                                        $bytesRead = $fileStream.Read($buffer, 0, $bytesToRead)
+                                        if ($bytesRead -le 0) { break }
+                                        $response.OutputStream.Write($buffer, 0, $bytesRead)
+                                        $bytesRemaining -= $bytesRead
+                                    }
+                                }
+                            } else {
+                                # --- PROCESAMIENTO ESTÁNDAR (STREAMING COMPLETO 200 OK) ---
+                                $response.StatusCode = 200
+                                $response.ContentLength64 = $fileLength
+
+                                if ($request.HttpMethod -eq "GET") {
+                                    $fileStream.CopyTo($response.OutputStream)
+                                }
+                            }
+                        } finally {
+                            $fileStream.Close()
+                        }
                     } else {
                         $response.StatusCode = 404
                     }
@@ -184,13 +244,11 @@ $script:worker.Add_DoWork({
                 } finally {
                     try { $ctx.Response.Close() } catch {}
                 }
-            }, @{ Context = $context; BasePath = $basePath }) | Out-Null
+            }, @{ Context = $context; BaseUri = $baseUri; RootPath = $rootPath }) | Out-Null
 
         } catch [System.Net.HttpListenerException], [System.ObjectDisposedException] {
             break
-        } catch {
-            # Errores generales
-        }
+        } catch {}
     }
 })
 
@@ -209,9 +267,15 @@ $btnStart.Add_Click({
         return
     }
 
-    $rutaInput = $txtRuta.Text.Trim('"').Trim("'")
-    $puerto = $txtPuerto.Text.Trim()
+    # Validación de puerto
+    $puertoRaw = $txtPuerto.Text.Trim()
+    [int]$puerto = 0
+    if (-not [int]::TryParse($puertoRaw, [ref]$puerto) -or $puerto -lt 1 -or $puerto -gt 65535) {
+        [System.Windows.Forms.MessageBox]::Show("Ingrese un número de puerto válido entre 1 y 65535.", "Error de Validación", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return
+    }
 
+    $rutaInput = $txtRuta.Text.Trim('"').Trim("'")
     if (-not (Test-Path $rutaInput -PathType Container)) {
         [System.Windows.Forms.MessageBox]::Show("La ruta especificada no existe.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return
@@ -221,6 +285,7 @@ $btnStart.Add_Click({
     if (-not $basePath.EndsWith([System.IO.Path]::DirectorySeparatorChar.ToString())) {
         $basePath += [System.IO.Path]::DirectorySeparatorChar
     }
+    $baseUri = New-Object System.Uri($basePath)
 
     if (Test-IsAdmin) {
         $ruleName = "Permitir Puerto HTTP $puerto"
@@ -238,7 +303,7 @@ $btnStart.Add_Click({
         return
     }
 
-    $args = @{ Listener = $script:listener; BasePath = $basePath }
+    $args = @{ Listener = $script:listener; BaseUri = $baseUri; RootPath = $basePath }
     $script:worker.RunWorkerAsync($args)
 
     $labelEstado.Text = "Estado: Corriendo en http://localhost:$puerto/"
