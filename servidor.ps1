@@ -16,11 +16,11 @@ $label.Size = New-Object System.Drawing.Size(460, 20)
 $label.Text = "Selecciona la carpeta raíz de tu sitio web (con index.html):"
 $form.Controls.Add($label)
 
-# Campo de texto para la ruta
+# Campo de texto para la ruta (Ahora predeterminado en C:\)
 $textBox = New-Object System.Windows.Forms.TextBox
 $textBox.Location = New-Object System.Drawing.Point(20, 50)
 $textBox.Size = New-Object System.Drawing.Size(360, 20)
-$textBox.Text = "C:\Users\PC\Downloads\pdf-editor\pdf-editor"
+$textBox.Text = "C:\"
 $form.Controls.Add($textBox)
 
 # Botón Buscar / Examinar
