@@ -4,16 +4,16 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 function Test-IsAdmin {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 $esAdmin = Test-IsAdmin
 
 # --- CONFIGURACIÓN DE LA INTERFAZ ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Servidor Web Pro - PowerShell"
+$form.Text = "Servidor Web Pro - PowerShell (SPA & Multi-Thread)"
 $form.Size = New-Object System.Drawing.Size(540, 320)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
@@ -112,7 +112,7 @@ $btnStart.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
 $btnStart.ForeColor = [System.Drawing.Color]::White
 $btnStart.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 
-# --- ARQUITECTURA MULTIHILO (BackgroundWorker) ---
+# --- ARQUITECTURA MULTIHILO CON SPA FALLBACK ---
 $script:listener = $null
 $script:worker = New-Object System.ComponentModel.BackgroundWorker
 $script:worker.WorkerSupportsCancellation = $true
@@ -124,52 +124,78 @@ $script:worker.Add_DoWork({
 
     while ($listener.IsListening -and -not $sender.CancellationPending) {
         try {
-            # Bloqueo sincrónico seguro en el hilo secundario (sin consumo de CPU)
             $context = $listener.GetContext()
-            $request = $context.Request
-            $response = $context.Response
 
-            $decodedPath = [System.Uri]::UnescapeDataString($request.Url.LocalPath).TrimStart('/')
-            if ([string]::IsNullOrEmpty($decodedPath)) { $decodedPath = "index.html" }
+            [System.Threading.ThreadPool]::QueueUserWorkItem({
+                param($state)
+                $ctx = $state.Context
+                $root = $state.BasePath
+                
+                try {
+                    $request = $ctx.Request
+                    $response = $ctx.Response
 
-            $candidatePath = Join-Path $basePath $decodedPath
-            $fullPath = [System.IO.Path]::GetFullPath($candidatePath)
+                    $decodedPath = [System.Uri]::UnescapeDataString($request.Url.LocalPath).TrimStart('/')
+                    if ([string]::IsNullOrEmpty($decodedPath)) { $decodedPath = "index.html" }
 
-            # Prevención de Path Traversal
-            if ($fullPath.StartsWith($basePath, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path $fullPath -PathType Leaf)) {
-                $ext = [System.IO.Path]::GetExtension($fullPath).ToLower()
-                switch ($ext) {
-                    ".html"  { $response.ContentType = "text/html; charset=utf-8" }
-                    ".css"   { $response.ContentType = "text/css" }
-                    ".js"    { $response.ContentType = "application/javascript" }
-                    ".json"  { $response.ContentType = "application/json" }
-                    ".png"   { $response.ContentType = "image/png" }
-                    ".jpg"   { $response.ContentType = "image/jpeg" }
-                    ".svg"   { $response.ContentType = "image/svg+xml" }
-                    ".webp"  { $response.ContentType = "image/webp" }
-                    ".woff2" { $response.ContentType = "font/woff2" }
-                    default  { $response.ContentType = "application/octet-stream" }
+                    $candidatePath = Join-Path $root $decodedPath
+                    $fullPath = [System.IO.Path]::GetFullPath($candidatePath)
+
+                    $fileToServe = $null
+
+                    # 1. Verificar si el archivo físico existe y respeta la raíz
+                    if ($fullPath.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path $fullPath -PathType Leaf)) {
+                        $fileToServe = $fullPath
+                    } 
+                    # 2. Lógica SPA Fallback: Si no existe el archivo, no tiene extensión de recurso y existe index.html
+                    else {
+                        $requestedExtension = [System.IO.Path]::GetExtension($decodedPath)
+                        $indexPath = Join-Path $root "index.html"
+
+                        if ([string]::IsNullOrEmpty($requestedExtension) -and (Test-Path $indexPath -PathType Leaf)) {
+                            $fileToServe = $indexPath
+                        }
+                    }
+
+                    # Servir archivo
+                    if ($fileToServe) {
+                        $ext = [System.IO.Path]::GetExtension($fileToServe).ToLower()
+                        switch ($ext) {
+                            ".html"  { $response.ContentType = "text/html; charset=utf-8" }
+                            ".css"   { $response.ContentType = "text/css" }
+                            ".js"    { $response.ContentType = "application/javascript" }
+                            ".json"  { $response.ContentType = "application/json" }
+                            ".png"   { $response.ContentType = "image/png" }
+                            ".jpg"   { $response.ContentType = "image/jpeg" }
+                            ".svg"   { $response.ContentType = "image/svg+xml" }
+                            ".webp"  { $response.ContentType = "image/webp" }
+                            ".woff2" { $response.ContentType = "font/woff2" }
+                            default  { $response.ContentType = "application/octet-stream" }
+                        }
+
+                        $bytes = [System.IO.File]::ReadAllBytes($fileToServe)
+                        $response.ContentLength64 = $bytes.Length
+                        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                    } else {
+                        $response.StatusCode = 404
+                    }
+                } catch {
+                    try { $ctx.Response.StatusCode = 500 } catch {}
+                } finally {
+                    try { $ctx.Response.Close() } catch {}
                 }
+            }, @{ Context = $context; BasePath = $basePath }) | Out-Null
 
-                $bytes = [System.IO.File]::ReadAllBytes($fullPath)
-                $response.ContentLength64 = $bytes.Length
-                $response.OutputStream.Write($bytes, 0, $bytes.Length)
-            } else {
-                $response.StatusCode = 403
-            }
-            $response.Close()
         } catch [System.Net.HttpListenerException], [System.ObjectDisposedException] {
-            # Ocurre cuando el hilo principal detiene/cierra el listener de forma ordenada
             break
         } catch {
-            # Evita caídas ante peticiones malformadas
+            # Errores generales
         }
     }
 })
 
 $btnStart.Add_Click({
     if ($script:listener -and $script:listener.IsListening) {
-        # DETENER SERVIDOR
         $script:worker.CancelAsync()
         if ($script:listener) {
             $script:listener.Stop()
@@ -212,7 +238,6 @@ $btnStart.Add_Click({
         return
     }
 
-    # Desplegar el servidor en el BackgroundWorker sin congelar la ventana
     $args = @{ Listener = $script:listener; BasePath = $basePath }
     $script:worker.RunWorkerAsync($args)
 
@@ -226,7 +251,6 @@ $btnStart.Add_Click({
 
 $form.Controls.Add($btnStart)
 
-# Cierre limpio al salir de la aplicación
 $form.Add_FormClosing({
     if ($script:worker.IsBusy) {
         $script:worker.CancelAsync()
