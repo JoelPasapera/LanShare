@@ -2,6 +2,43 @@
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Web
+
+# --- DICCIONARIO GLOBAL DE MIME TYPES (ESTÁNDAR WEB Y COMPATIBILIDAD EXTENDIDA) ---
+$global:MimeTypes = @{
+    ".html"        = "text/html; charset=utf-8"
+    ".htm"         = "text/html; charset=utf-8"
+    ".css"         = "text/css; charset=utf-8"
+    ".js"          = "text/javascript; charset=utf-8"
+    ".mjs"         = "text/javascript; charset=utf-8"
+    ".json"        = "application/json; charset=utf-8"
+    ".map"         = "application/json"
+    ".png"         = "image/png"
+    ".jpg"         = "image/jpeg"
+    ".jpeg"        = "image/jpeg"
+    ".gif"         = "image/gif"
+    ".svg"         = "image/svg+xml"
+    ".webp"        = "image/webp"
+    ".avif"        = "image/avif"
+    ".ico"         = "image/x-icon"
+    ".bmp"         = "image/bmp"
+    ".mp3"         = "audio/mpeg"
+    ".ogg"         = "audio/ogg"
+    ".wav"         = "audio/wav"
+    ".m4a"         = "audio/mp4"
+    ".mp4"         = "video/mp4"
+    ".webm"        = "video/webm"
+    ".wasm"        = "application/wasm"
+    ".pdf"         = "application/pdf"
+    ".txt"         = "text/plain; charset=utf-8"
+    ".xml"         = "application/xml; charset=utf-8"
+    ".webmanifest" = "application/manifest+json"
+    ".ttf"         = "font/ttf"
+    ".otf"         = "font/otf"
+    ".woff"        = "font/woff"
+    ".woff2"       = "font/woff2"
+    ".eot"         = "application/vnd.ms-fontobject"
+}
 
 # --- RESOLUCIÓN NATIVA WIN32 ANTI-JUNCTION / SYMLINK, TOCTOU Y EXPLORADOR MODERNO ---
 if (-not ([System.Management.Automation.PSTypeName]'NativePath').Type) {
@@ -130,20 +167,47 @@ if (-not ([System.Management.Automation.PSTypeName]'NativePath').Type) {
 "@
 }
 
+# --- FUNCIONES AUXILIARES Y ESTADO COMPARTIDO ---
 function Test-IsAdmin {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-ActiveLANIPs {
+    [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+        Where-Object { 
+            $_.OperationalStatus -eq 'Up' -and 
+            $_.NetworkInterfaceType -ne 'Loopback' -and 
+            $_.NetworkInterfaceType -ne 'Tunnel' 
+        } |
+        ForEach-Object {
+            $_.GetIPProperties().UnicastAddresses |
+                Where-Object { 
+                    $_.Address.AddressFamily -eq 'InterNetwork' -and 
+                    -not [System.Net.IPAddress]::IsLoopback($_.Address) 
+                } |
+                Select-Object -ExpandProperty Address |
+                ForEach-Object { $_.IPAddressToString }
+        } | 
+        Where-Object { $_ -notlike "169.254.*" } | 
+        Select-Object -Unique
+}
+
 $esAdmin = Test-IsAdmin
 $script:logQueue = New-Object System.Collections.Concurrent.ConcurrentQueue[string]
 $script:psInstance = $null
+$script:currentLanUrls = @()
+
+$script:serverState = [hashtable]::Synchronized(@{
+    IsRunning = $false
+    Listener  = $null
+})
 
 # --- INTERFAZ GRÁFICA ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Servidor Web Pro - Hardened & Multi-Threaded"
-$form.Size = New-Object System.Drawing.Size(680, 580)
+$form.Size = New-Object System.Drawing.Size(680, 640)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -186,19 +250,19 @@ $form.Controls.Add($line)
 $gbModo = New-Object System.Windows.Forms.GroupBox
 $gbModo.Location = New-Object System.Drawing.Point(20, 50)
 $gbModo.Size = New-Object System.Drawing.Size(620, 55)
-$gbModo.Text = "Modo de Red"
+$gbModo.Text = "Alcance del Servidor"
 
 $rbLocal = New-Object System.Windows.Forms.RadioButton
 $rbLocal.Location = New-Object System.Drawing.Point(15, 20)
-$rbLocal.Size = New-Object System.Drawing.Size(200, 25)
-$rbLocal.Text = "Modo Local (localhost)"
+$rbLocal.Size = New-Object System.Drawing.Size(220, 25)
+$rbLocal.Text = "Solo este equipo (localhost)"
 $rbLocal.Checked = $true
 $gbModo.Controls.Add($rbLocal)
 
 $rbLAN = New-Object System.Windows.Forms.RadioButton
-$rbLAN.Location = New-Object System.Drawing.Point(230, 20)
-$rbLAN.Size = New-Object System.Drawing.Size(250, 25)
-$rbLAN.Text = "Modo LAN (Todas las Interfaces)"
+$rbLAN.Location = New-Object System.Drawing.Point(245, 20)
+$rbLAN.Size = New-Object System.Drawing.Size(350, 25)
+$rbLAN.Text = "Red local (accesible desde otros dispositivos)"
 $gbModo.Controls.Add($rbLAN)
 $form.Controls.Add($gbModo)
 
@@ -239,16 +303,8 @@ $txtPuerto.Size = New-Object System.Drawing.Size(135, 23)
 $txtPuerto.Text = "8080"
 $form.Controls.Add($txtPuerto)
 
-$labelEstado = New-Object System.Windows.Forms.Label
-$labelEstado.Location = New-Object System.Drawing.Point(20, 168)
-$labelEstado.Size = New-Object System.Drawing.Size(620, 20)
-$labelEstado.Text = "Estado: Detenido"
-$labelEstado.ForeColor = [System.Drawing.Color]::Red
-$labelEstado.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$form.Controls.Add($labelEstado)
-
 $btnStart = New-Object System.Windows.Forms.Button
-$btnStart.Location = New-Object System.Drawing.Point(20, 193)
+$btnStart.Location = New-Object System.Drawing.Point(20, 168)
 $btnStart.Size = New-Object System.Drawing.Size(620, 38)
 $btnStart.Text = "Iniciar Servidor"
 $btnStart.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
@@ -256,16 +312,48 @@ $btnStart.ForeColor = [System.Drawing.Color]::White
 $btnStart.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnStart)
 
+# --- PANEL DE ESTADO Y ACCESOS EN VIVO ---
+$gbEstado = New-Object System.Windows.Forms.GroupBox
+$gbEstado.Location = New-Object System.Drawing.Point(20, 215)
+$gbEstado.Size = New-Object System.Drawing.Size(620, 100)
+$gbEstado.Text = "Estado y Direcciones de Acceso"
+
+$txtEstadoInfo = New-Object System.Windows.Forms.TextBox
+$txtEstadoInfo.Location = New-Object System.Drawing.Point(15, 22)
+$txtEstadoInfo.Size = New-Object System.Drawing.Size(430, 68)
+$txtEstadoInfo.Multiline = $true
+$txtEstadoInfo.ReadOnly = $true
+$txtEstadoInfo.ScrollBars = "Vertical"
+$txtEstadoInfo.Text = "Estado: Detenido"
+$txtEstadoInfo.Font = New-Object System.Drawing.Font("Consolas", 8.5)
+$gbEstado.Controls.Add($txtEstadoInfo)
+
+$btnCopyLAN = New-Object System.Windows.Forms.Button
+$btnCopyLAN.Location = New-Object System.Drawing.Point(455, 30)
+$btnCopyLAN.Size = New-Object System.Drawing.Size(150, 45)
+$btnCopyLAN.Text = "Copiar URL LAN"
+$btnCopyLAN.Enabled = $false
+$btnCopyLAN.Add_Click({
+    if ($script:currentLanUrls.Count -gt 0) {
+        $textToCopy = $script:currentLanUrls -join "`r`n"
+        [System.Windows.Forms.Clipboard]::SetText($textToCopy)
+        [System.Windows.Forms.MessageBox]::Show("URL(s) LAN copiada(s) al portapapeles:``n$textToCopy", "Copiado", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    }
+})
+$gbEstado.Controls.Add($btnCopyLAN)
+
+$form.Controls.Add($gbEstado)
+
 $labelConsole = New-Object System.Windows.Forms.Label
-$labelConsole.Location = New-Object System.Drawing.Point(20, 240)
+$labelConsole.Location = New-Object System.Drawing.Point(20, 323)
 $labelConsole.Size = New-Object System.Drawing.Size(250, 18)
 $labelConsole.Text = "Registro de Telemetria (Live Logs):"
 $labelConsole.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($labelConsole)
 
 $txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Location = New-Object System.Drawing.Point(20, 260)
-$txtLog.Size = New-Object System.Drawing.Size(620, 260)
+$txtLog.Location = New-Object System.Drawing.Point(20, 343)
+$txtLog.Size = New-Object System.Drawing.Size(620, 245)
 $txtLog.Multiline = $true
 $txtLog.ReadOnly = $true
 $txtLog.ScrollBars = "Vertical"
@@ -274,7 +362,6 @@ $txtLog.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
 $txtLog.Font = New-Object System.Drawing.Font("Consolas", 8.5)
 $form.Controls.Add($txtLog)
 
-# Polling de logs thread-safe en la GUI
 $logTimer = New-Object System.Windows.Forms.Timer
 $logTimer.Interval = 100
 $logTimer.Add_Tick({
@@ -287,9 +374,9 @@ $logTimer.Add_Tick({
 })
 $logTimer.Start()
 
-# --- HANDLER CONCURRENTE (RUNSPACEPOOL) CON SEGURIDAD TOCTOU Y HTTP RANGE RFC 9110 ---
+# --- HANDLER CONCURRENTE CON RESOLUCIÓN MIME AVANZADA ---
 $requestHandlerScript = {
-    param($context, $rootPath, $realRootUri, $logQueue)
+    param($context, $rootPath, $realRootUri, $logQueue, $serverState, $mimeDict)
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $request = $context.Request
@@ -331,7 +418,6 @@ $requestHandlerScript = {
         }
 
         if ($fileToServe) {
-            # 1. ATOMIC OPEN-FIRST
             $fileStream = $null
             try {
                 $fileStream = [System.IO.File]::Open(
@@ -348,7 +434,6 @@ $requestHandlerScript = {
             }
 
             try {
-                # 2. VALIDATE HANDLE ATOMICALLY (Prevención TOCTOU)
                 $realHandlePath = [NativePath]::GetRealPathFromHandle($fileStream.SafeFileHandle)
                 $realHandleUri = New-Object System.Uri($realHandlePath)
 
@@ -359,27 +444,23 @@ $requestHandlerScript = {
                     return
                 }
 
-                # 3. MIME TYPES
+                # RESOLUCIÓN MIME TRIPLE CAPA: Hashtable O(1) -> Windows System API -> Octet-Stream
                 $ext = [System.IO.Path]::GetExtension($fileToServe).ToLower()
-                switch ($ext) {
-                    ".html"  { $response.ContentType = "text/html; charset=utf-8" }
-                    ".css"   { $response.ContentType = "text/css" }
-                    ".js"    { $response.ContentType = "application/javascript" }
-                    ".json"  { $response.ContentType = "application/json" }
-                    ".png"   { $response.ContentType = "image/png" }
-                    ".jpg"   { $response.ContentType = "image/jpeg" }
-                    ".mp4"   { $response.ContentType = "video/mp4" }
-                    ".webm"  { $response.ContentType = "video/webm" }
-                    ".svg"   { $response.ContentType = "image/svg+xml" }
-                    ".webp"  { $response.ContentType = "image/webp" }
-                    ".woff2" { $response.ContentType = "font/woff2" }
-                    default  { $response.ContentType = "application/octet-stream" }
+
+                if ($mimeDict.ContainsKey($ext)) {
+                    $response.ContentType = $mimeDict[$ext]
+                } else {
+                    $winMime = [System.Web.MimeMapping]::GetMimeMapping($fileToServe)
+                    if (-not [string]::IsNullOrEmpty($winMime)) {
+                        $response.ContentType = $winMime
+                    } else {
+                        $response.ContentType = "application/octet-stream"
+                    }
                 }
 
                 $fileLength = $fileStream.Length
                 $rangeHeader = $request.Headers["Range"]
 
-                # 4. HTTP RANGE (RFC 9110)
                 if (-not [string]::IsNullOrEmpty($rangeHeader) -and $rangeHeader -match "^bytes=(\d*)-(\d*)$") {
                     $rawStart = $matches[1]
                     $rawEnd = $matches[2]
@@ -418,7 +499,7 @@ $requestHandlerScript = {
                         $buffer = New-Object byte[] 65536
                         $bytesRemaining = $contentLength
 
-                        while ($bytesRemaining -gt 0) {
+                        while ($bytesRemaining -gt 0 -and $serverState.IsRunning) {
                             $bytesToRead = [Math]::Min($buffer.Length, $bytesRemaining)
                             $bytesRead = $fileStream.Read($buffer, 0, $bytesToRead)
                             if ($bytesRead -le 0) { break }
@@ -432,8 +513,11 @@ $requestHandlerScript = {
                     $response.ContentLength64 = $fileLength
 
                     if ($httpMethod -eq "GET") {
-                        $fileStream.CopyTo($response.OutputStream)
-                        $bytesSent = $fileLength
+                        $buffer = New-Object byte[] 65536
+                        while (($bytesRead = $fileStream.Read($buffer, 0, $buffer.Length)) -gt 0 -and $serverState.IsRunning) {
+                            $response.OutputStream.Write($buffer, 0, $bytesRead)
+                            $bytesSent += $bytesRead
+                        }
                     }
                 }
 
@@ -460,15 +544,18 @@ $requestHandlerScript = {
 
 # --- MASTER LISTENER LOOP ---
 $serverMasterScript = {
-    param($bindingPrefix, $rootPath, $realRootPath, $logQueue, $handlerScriptBlock)
+    param($bindingPrefix, $rootPath, $realRootPath, $logQueue, $handlerScriptBlock, $serverState, $mimeDict)
 
     $listener = New-Object System.Net.HttpListener
     $listener.Prefixes.Add($bindingPrefix)
 
     try {
         $listener.Start()
+        $serverState.Listener = $listener
+        $serverState.IsRunning = $true
     } catch {
         $logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [ERROR]`r`nHttpListener Start Error: $($_.Exception.Message)`r`n")
+        $serverState.IsRunning = $false
         return
     }
 
@@ -478,7 +565,7 @@ $serverMasterScript = {
 
     $tasks = New-Object System.Collections.Generic.List[PSObject]
 
-    while ($listener.IsListening) {
+    while ($serverState.IsRunning -and $listener.IsListening) {
         try {
             $context = $listener.GetContext()
 
@@ -489,6 +576,8 @@ $serverMasterScript = {
             [void]$psWorker.AddArgument($rootPath)
             [void]$psWorker.AddArgument($realRootUri)
             [void]$psWorker.AddArgument($logQueue)
+            [void]$psWorker.AddArgument($serverState)
+            [void]$psWorker.AddArgument($mimeDict)
             
             $asyncResult = $psWorker.BeginInvoke()
             [void]$tasks.Add([PSCustomObject]@{ Pipe = $psWorker; Status = $asyncResult })
@@ -506,35 +595,54 @@ $serverMasterScript = {
         } catch [System.Net.HttpListenerException], [System.ObjectDisposedException] {
             break
         } catch {
-            $logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [ERROR]`r`nMaster Loop Error: $($_.Exception.Message)`r`n")
+            if ($serverState.IsRunning) {
+                $logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [ERROR]`r`nMaster Loop Error: $($_.Exception.Message)`r`n")
+            }
         }
     }
 
     foreach ($t in $tasks) {
-        try { $t.Pipe.Dispose() } catch {}
+        try { 
+            $t.Pipe.Stop()
+            $t.Pipe.Dispose() 
+        } catch {}
     }
     try { $pool.Close(); $pool.Dispose() } catch {}
-    try { $listener.Stop(); $listener.Close() } catch {}
 }
 
-# --- CONTROL DE INICIO Y DETENCIÓN ---
+# --- CONTROL DE INICIO Y DETENCIÓN INMEDIATA ---
 $btnStart.Add_Click({
-    if ($script:psInstance) {
-        try {
-            $script:psInstance.Stop()
-            $script:psInstance.Dispose()
-        } catch {}
-        $script:psInstance = $null
+    if ($script:serverState.IsRunning) {
+        $script:serverState.IsRunning = $false
+
+        if ($null -ne $script:serverState.Listener) {
+            try {
+                $script:serverState.Listener.Stop()
+                $script:serverState.Listener.Close()
+            } catch {}
+            $script:serverState.Listener = $null
+        }
+
+        if ($null -ne $script:psInstance) {
+            try {
+                $script:psInstance.Stop()
+                $script:psInstance.Dispose()
+            } catch {}
+            $script:psInstance = $null
+        }
 
         $gbModo.Enabled = $true
         $txtPuerto.Enabled = $true
         $txtRuta.Enabled = $true
         $btnBrowse.Enabled = $true
-        $labelEstado.Text = "Estado: Detenido"
-        $labelEstado.ForeColor = [System.Drawing.Color]::Red
+        $btnCopyLAN.Enabled = $false
+        $script:currentLanUrls = @()
+
+        $txtEstadoInfo.Text = "Estado: Detenido"
         $btnStart.Text = "Iniciar Servidor"
         $btnStart.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
-        $script:logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [INFO]`r`nServidor detenido por el usuario.`r`n")
+
+        $script:logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [INFO]`r`nServidor detenido instantaneamente.`r`n")
         return
     }
 
@@ -562,21 +670,28 @@ $btnStart.Add_Click({
     }
 
     $bindingPrefix = ""
-    $displayUrl = ""
+    $statusText = "Estado: Corriendo`r`n`r`nAcceso local:`r`nhttp://localhost:$puerto/"
 
     if ($rbLocal.Checked) {
         $bindingPrefix = "http://localhost:$puerto/"
-        $displayUrl = "http://localhost:$puerto/"
+        $btnCopyLAN.Enabled = $false
     } else {
         if (-not (Test-IsAdmin)) {
-            [System.Windows.Forms.MessageBox]::Show("El Modo LAN requiere ejecutar la aplicacion como Administrador.", "Permisos Insuficientes", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            [System.Windows.Forms.MessageBox]::Show("El modo Red Local requiere ejecutar la aplicacion como Administrador.", "Permisos Insuficientes", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
             return
         }
 
         $bindingPrefix = "http://+:$puerto/"
-        $localIP = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Wi-Fi","Ethernet*" -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
-        if (-not $localIP) { $localIP = "IP_DE_TU_RED" }
-        $displayUrl = "http://${localIP}:$puerto/"
+        $detectedIPs = Get-ActiveLANIPs
+
+        if ($detectedIPs.Count -gt 0) {
+            $script:currentLanUrls = $detectedIPs | ForEach-Object { "http://${_}:$puerto/" }
+            $statusText += "`r`n`r`nAcceso LAN:`r`n" + ($script:currentLanUrls -join "`r`n")
+            $btnCopyLAN.Enabled = $true
+        } else {
+            $statusText += "`r`n`r`nAcceso LAN:`r`nNo se detectaron adaptadores de red activos."
+            $btnCopyLAN.Enabled = $false
+        }
 
         $ruleName = "Permitir HTTP Servidor Pro $puerto"
         if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) {
@@ -591,6 +706,8 @@ $btnStart.Add_Click({
     [void]$script:psInstance.AddArgument($realRootPath)
     [void]$script:psInstance.AddArgument($script:logQueue)
     [void]$script:psInstance.AddArgument($requestHandlerScript)
+    [void]$script:psInstance.AddArgument($script:serverState)
+    [void]$script:psInstance.AddArgument($global:MimeTypes)
     [void]$script:psInstance.BeginInvoke()
 
     $gbModo.Enabled = $false
@@ -598,12 +715,11 @@ $btnStart.Add_Click({
     $txtRuta.Enabled = $false
     $btnBrowse.Enabled = $false
 
-    $labelEstado.Text = "Estado: Corriendo en $displayUrl"
-    $labelEstado.ForeColor = [System.Drawing.Color]::Green
+    $txtEstadoInfo.Text = $statusText
     $btnStart.Text = "Detener Servidor"
     $btnStart.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
 
-    $script:logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [INFO]`r`nServidor iniciado en $displayUrl [Raiz: $basePath]`r`n")
+    $script:logQueue.Enqueue("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [INFO]`r`nServidor iniciado en puerto $puerto [Raiz: $basePath]`r`n")
     Start-Process "http://localhost:$puerto/"
 })
 
@@ -611,6 +727,13 @@ $form.Controls.Add($btnStart)
 
 $form.Add_FormClosing({
     $logTimer.Stop()
+    $script:serverState.IsRunning = $false
+    if ($null -ne $script:serverState.Listener) {
+        try {
+            $script:serverState.Listener.Stop()
+            $script:serverState.Listener.Close()
+        } catch {}
+    }
     if ($script:psInstance) {
         try {
             $script:psInstance.Stop()
