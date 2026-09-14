@@ -1,0 +1,11 @@
+Coloca aqui las capturas de pantalla que enlaza el README de la raiz.
+
+Sugeridas:
+  principal.png   ventana principal con el servidor corriendo
+  clientes.png    pestana de clientes conectados con el detalle desplegado
+  qr.png          dialogo del codigo QR
+
+Despues, descomenta en README.md la linea de la imagen:
+  ![Ventana principal](docs/capturas/principal.png)
+
+Este archivo se puede borrar cuando anadas las capturas reales.

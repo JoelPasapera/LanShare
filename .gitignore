@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+#  LanShare - archivos que NO deben versionarse
+#
+#  Los binarios van en un Release de GitHub, no en el historial: Git los
+#  comprime mal, asi que cada recompilacion añade una copia entera que ya no
+#  se puede borrar sin reescribir el historial.
+# ---------------------------------------------------------------------------
+
+# --- Salida de compilacion ---
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# --- Registros y archivos de respuesta que genera build.cmd ---
+build.log
+*.rsp
+
+# --- Base OUI de IEEE ---
+# Son ~4 MB de datos de terceros que el usuario descarga por su cuenta.
+oui.txt
+
+# --- Visual Studio ---
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.csproj.user
+*.VC.db
+*.VC.opendb
+
+# --- Configuracion en tiempo de ejecucion ---
+# Se guarda en %APPDATA%, pero por si alguien la copia junto al ejecutable.
+settings.json
+
+# --- Sistema operativo ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# --- Editores ---
+*.swp
+*~
+.idea/
+.vscode/
+PROJECT_CONTEXT.md
+manifest.json
+CRITERIOS.md
+skills-diseno.txt
+CLAUDE.md
