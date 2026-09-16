@@ -2,7 +2,8 @@
 
 Comparte una carpeta con tu teléfono, tu tablet o cualquier equipo de la red
 local. Un solo ejecutable de unos 160 KB que corre en cualquier Windows 10 u 11
-sin instalar nada.
+sin instalar nada. PUEDES ABRIR PAGINAS WEB DESDE TU CELULAR USANDO TU PC COMO SERVIDOR
+o abrirla desde tu misma pc (localhost)
 
 <!-- Sustituye por una captura real: docs/capturas/principal.png -->
 <!-- ![Ventana principal](docs/capturas/principal.png) -->
