@@ -40,6 +40,7 @@ Para el modo red local hace falta administrador (clic derecho → *Ejecutar como
 administrador*, o el botón dentro de la aplicación).
 
 ## Compilar desde el código
+Solo entra a la carpeta 'src' luego dale doble click a 'build.cmd' (es el encargado de compilar todo el proyecto en un solo archivo .exe) luego sal de esa carpeta y ve a la carpeta 'bin' (ahi se guardan los binarios), ahi estará el ejecutable '.exe' el cual es el programa en si mismo ya listo para usar
 
 ```
 cd src
