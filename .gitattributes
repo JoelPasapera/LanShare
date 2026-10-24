@@ -1,0 +1,4 @@
+# Los .cmd necesitan CRLF: con solo LF, cmd.exe puede no encontrar las
+# etiquetas de GOTO y CALL segun donde caigan dentro del archivo.
+*.cmd text eol=crlf
+*.bat text eol=crlf
