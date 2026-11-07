@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Proyecto para Visual Studio. Es opcional: build.cmd compila lo mismo con el
+  csc.exe que Windows ya trae, sin instalar nada.
+-->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props"
+          Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{8B6C4E21-9F3A-4D57-A1C8-2E7B5D904A16}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>LanShare</RootNamespace>
+    <AssemblyName>LanShare</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>5</LangVersion>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <ApplicationIcon>icono.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="AppInfo.cs" />
+    <Compile Include="Core\AppSettings.cs" />
+    <Compile Include="Core\BodyReader.cs" />
+    <Compile Include="Core\BufferPool.cs" />
+    <Compile Include="Core\ByteSize.cs" />
+    <Compile Include="Core\CertificatePage.cs" />
+    <Compile Include="Core\CompressionCache.cs" />
+    <Compile Include="Core\CompressionPolicy.cs" />
+    <Compile Include="Core\ConsoleLine.cs" />
+    <Compile Include="Core\ConsoleRelay.cs" />
+    <Compile Include="Core\ConsoleReport.cs" />
+    <Compile Include="Core\ContentDisposition.cs" />
+    <Compile Include="Core\Crc32.cs" />
+    <Compile Include="Core\DirectoryListing.cs" />
+    <Compile Include="Core\DroppedPath.cs" />
+    <Compile Include="Core\EntityTag.cs" />
+    <Compile Include="Core\FolderArchive.cs" />
+    <Compile Include="Core\HtmlInjection.cs" />
+    <Compile Include="Core\HtmlInjector.cs" />
+    <Compile Include="Core\HttpFileServer.cs" />
+    <Compile Include="Core\LiveReloadHub.cs" />
+    <Compile Include="Core\LiveReloadScript.cs" />
+    <Compile Include="Core\LogBus.cs" />
+    <Compile Include="Core\MimeRegistry.cs" />
+    <Compile Include="Core\MultipartReader.cs" />
+    <Compile Include="Core\NativePath.cs" />
+    <Compile Include="Core\PathGuard.cs" />
+    <Compile Include="Core\QrCode.cs" />
+    <Compile Include="Core\RangeSpec.cs" />
+    <Compile Include="Core\ReedSolomon.cs" />
+    <Compile Include="Core\ReloadPlanner.cs" />
+    <Compile Include="Core\RemoteConsoleScript.cs" />
+    <Compile Include="Core\ServerOptions.cs" />
+    <Compile Include="Core\SiteDefinition.cs" />
+    <Compile Include="Core\SiteRuntime.cs" />
+    <Compile Include="Core\SiteWatcher.cs" />
+    <Compile Include="Core\StaticFileResolver.cs" />
+    <Compile Include="Core\TokenBucket.cs" />
+    <Compile Include="Core\UploadHandler.cs" />
+    <Compile Include="Core\UploadNaming.cs" />
+    <Compile Include="Core\UploadPage.cs" />
+    <Compile Include="Core\ZipWriter.cs" />
+    <Compile Include="Https\CertificateExtensionData.cs" />
+    <Compile Include="Https\CertificateFactory.cs" />
+    <Compile Include="Https\CertificateFingerprint.cs" />
+    <Compile Include="Https\DerReader.cs" />
+    <Compile Include="Https\DerWriter.cs" />
+    <Compile Include="Https\HttpSysCertBinding.cs" />
+    <Compile Include="Https\HttpsProvisioner.cs" />
+    <Compile Include="Https\LeafNames.cs" />
+    <Compile Include="Https\LeafPolicy.cs" />
+    <Compile Include="Https\LocalCertificateAuthority.cs" />
+    <Compile Include="Https\LocalNameConstraints.cs" />
+    <Compile Include="Https\ServerCertificateStore.cs" />
+    <Compile Include="Identity\ClientInfo.cs" />
+    <Compile Include="Identity\ClientRegistry.cs" />
+    <Compile Include="Identity\DnsWire.cs" />
+    <Compile Include="Identity\MdnsListener.cs" />
+    <Compile Include="Identity\NetProbe.cs" />
+    <Compile Include="Identity\OuiTable.cs" />
+    <Compile Include="Identity\ProbePayload.cs" />
+    <Compile Include="Identity\ProbeScript.cs" />
+    <Compile Include="Identity\UaParser.cs" />
+    <Compile Include="Identity\VerdictEngine.cs" />
+    <Compile Include="Net\Elevation.cs" />
+    <Compile Include="Net\FirewallManager.cs" />
+    <Compile Include="Net\LanAddress.cs" />
+    <Compile Include="Net\LanAddressRanking.cs" />
+    <Compile Include="Net\LanAddresses.cs" />
+    <Compile Include="Net\PortAvailability.cs" />
+    <Compile Include="Platform\AutoStart.cs" />
+    <Compile Include="Platform\ScheduledTaskXml.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="SingleInstance.cs" />
+    <Compile Include="StartupOptions.cs" />
+    <Compile Include="Ui\AppIcon.cs" />
+    <Compile Include="Ui\ClientCsvWriter.cs" />
+    <Compile Include="Ui\ClientDetailFormatter.cs" />
+    <Compile Include="Ui\FileDropTarget.cs" />
+    <Compile Include="Ui\HttpsSettingsPage.cs" />
+    <Compile Include="Ui\MainForm.Drop.cs" />
+    <Compile Include="Ui\MainForm.Features.cs" />
+    <Compile Include="Ui\MainForm.Https.cs" />
+    <Compile Include="Ui\MainForm.Layout.cs" />
+    <Compile Include="Ui\MainForm.Panes.cs" />
+    <Compile Include="Ui\MainForm.Restart.cs" />
+    <Compile Include="Ui\MainForm.Shortcuts.cs" />
+    <Compile Include="Ui\MainForm.SitesMenu.cs" />
+    <Compile Include="Ui\MainForm.Tray.cs" />
+    <Compile Include="Ui\MainForm.cs" />
+    <Compile Include="Ui\ModernFolderPicker.cs" />
+    <Compile Include="Ui\NativeUi.cs" />
+    <Compile Include="Ui\PaneEdges.cs" />
+    <Compile Include="Ui\PaneGrip.cs" />
+    <Compile Include="Ui\PaneHeights.cs" />
+    <Compile Include="Ui\PaneStack.cs" />
+    <Compile Include="Ui\PortChoice.cs" />
+    <Compile Include="Ui\PortPickerDialog.cs" />
+    <Compile Include="Ui\PromptDialog.cs" />
+    <Compile Include="Ui\QrDialog.cs" />
+    <Compile Include="Ui\QrRenderer.cs" />
+    <Compile Include="Ui\SettingsDialog.cs" />
+    <Compile Include="Ui\SiteDialog.cs" />
+    <Compile Include="Ui\TrayController.cs" />
+    <Compile Include="Ui\UrlChoice.cs" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

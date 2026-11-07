@@ -1,0 +1,163 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+
+namespace LanShare.Core
+{
+    /// <summary>
+    /// Configuracion de una sesion: los sitios que se sirven y el comportamiento
+    /// comun a todos ellos.
+    ///
+    /// La lista de sitios se fija al arrancar; los cuatro interruptores se
+    /// pueden cambiar con el servidor en marcha porque los hilos de peticion
+    /// los leen en cada llamada.
+    /// </summary>
+    public sealed class ServerOptions
+    {
+        // Campos volatiles explicitos: una propiedad automatica no admite el
+        // modificador, y estos los escribe la interfaz mientras el pool lee.
+        private volatile bool _corsEnabled;
+        private volatile bool _enableCompression;
+        private volatile bool _enableDirectoryListing;
+        private volatile bool _distributionMode;
+        private volatile bool _enableLiveReload;
+        private volatile bool _enableUpload;
+        private volatile bool _enableRemoteConsole;
+        private volatile bool _crossOriginIsolation;
+        private volatile string _uploadFolder = "";
+        private long _uploadMaxBytes = 2048L * 1024 * 1024;
+
+        private readonly Dictionary<int, SiteRuntime> _byPort;
+        private readonly List<SiteRuntime> _sites;
+
+        public ServerOptions(IList<SiteRuntime> sites, bool corsEnabled)
+        {
+            if (sites == null || sites.Count == 0)
+                throw new ArgumentException("Hace falta al menos un sitio.", "sites");
+
+            _sites = new List<SiteRuntime>(sites);
+            _byPort = new Dictionary<int, SiteRuntime>();
+
+            // El puerto HTTPS de un sitio lleva al mismo sitio que su puerto
+            // HTTP; ninguno de los dos puede repetirse entre sitios.
+            foreach (SiteRuntime site in _sites)
+            {
+                Register(site.Port, site);
+                if (site.HttpsPort != 0) Register(site.HttpsPort, site);
+            }
+
+            _corsEnabled = corsEnabled;
+            _enableCompression = true;
+            _enableDirectoryListing = true;
+            _distributionMode = false;
+        }
+
+        public IList<SiteRuntime> Sites { get { return _sites; } }
+
+        private void Register(int port, SiteRuntime site)
+        {
+            if (_byPort.ContainsKey(port))
+                throw new ArgumentException("Dos sitios comparten el puerto " + port + ".");
+            _byPort[port] = site;
+        }
+
+        /// <summary>
+        /// Certificado de la autoridad local en DER, el que se ofrece en
+        /// /__certificado para instalarlo en el movil; null si ningun sitio
+        /// tiene HTTPS. Se fija antes de arrancar y no cambia despues.
+        /// </summary>
+        public byte[] HttpsAuthorityCertificate { get; set; }
+
+        /// <summary>Huella SHA-256 de esa autoridad, para compararla en el movil con la del PC.</summary>
+        public string HttpsAuthorityFingerprint { get; set; }
+
+        /// <summary>Resuelve que sitio atiende una peticion segun el puerto de entrada (HTTP o HTTPS).</summary>
+        public SiteRuntime FindByPort(int port)
+        {
+            SiteRuntime site;
+            return _byPort.TryGetValue(port, out site) ? site : null;
+        }
+
+        public bool CorsEnabled
+        {
+            get { return _corsEnabled; }
+            set { _corsEnabled = value; }
+        }
+
+        public bool EnableCompression
+        {
+            get { return _enableCompression; }
+            set { _enableCompression = value; }
+        }
+
+        public bool EnableDirectoryListing
+        {
+            get { return _enableDirectoryListing; }
+            set { _enableDirectoryListing = value; }
+        }
+
+        /// <summary>
+        /// En desarrollo se envia no-store para que el navegador nunca sirva
+        /// una version vieja. En distribucion se emiten validadores y se
+        /// responde 304, que ahorra reenviar lo que el cliente ya tiene.
+        /// </summary>
+        public bool DistributionMode
+        {
+            get { return _distributionMode; }
+            set { _distributionMode = value; }
+        }
+
+        /// <summary>Acepta conexiones en /__events e inyecta el script de recarga.</summary>
+        public bool EnableLiveReload
+        {
+            get { return _enableLiveReload; }
+            set { _enableLiveReload = value; }
+        }
+
+        /// <summary>Atiende /__subir. Apagado de serie: es la unica via de escritura.</summary>
+        public bool EnableUpload
+        {
+            get { return _enableUpload; }
+            set { _enableUpload = value; }
+        }
+
+        /// <summary>
+        /// Atiende /__consola e inyecta su script en las paginas que piden los
+        /// otros dispositivos. Apagado de serie: envuelve console.log.
+        /// </summary>
+        public bool EnableRemoteConsole
+        {
+            get { return _enableRemoteConsole; }
+            set { _enableRemoteConsole = value; }
+        }
+
+        /// <summary>
+        /// Envia COOP y COEP en cada respuesta: las paginas quedan aisladas de
+        /// otros origenes (crossOriginIsolated), que es lo que exigen
+        /// SharedArrayBuffer y WebAssembly con hilos. Apagado de serie: impide
+        /// cargar recursos de otros dominios que no lo autoricen.
+        /// </summary>
+        public bool CrossOriginIsolation
+        {
+            get { return _crossOriginIsolation; }
+            set { _crossOriginIsolation = value; }
+        }
+
+        /// <summary>Carpeta donde se guardan las subidas; nunca la del sitio.</summary>
+        public string UploadFolder
+        {
+            get { return _uploadFolder; }
+            set { _uploadFolder = value ?? ""; }
+        }
+
+        /// <summary>
+        /// Tope por archivo. Un long no admite volatile y en 32 bits su escritura
+        /// no es atomica, asi que va con Interlocked.
+        /// </summary>
+        public long UploadMaxBytes
+        {
+            get { return Interlocked.Read(ref _uploadMaxBytes); }
+            set { Interlocked.Exchange(ref _uploadMaxBytes, value); }
+        }
+    }
+}

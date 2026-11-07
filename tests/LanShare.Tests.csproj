@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Proyecto de pruebas para Visual Studio. Es opcional: build-tests.cmd compila y
+  ejecuta lo mismo con el csc que Windows ya trae.
+
+  Compila los fuentes de la aplicacion junto a los de las pruebas (menos su
+  Main) para poder alcanzar tambien los tipos internos.
+-->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props"
+          Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{2F9A47C3-15E8-4B6D-9C71-3A8E04D2B517}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LanShare.Tests</RootNamespace>
+    <AssemblyName>LanShare.Tests</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>5</LangVersion>
+    <OutputPath>bin\</OutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.IO.Compression" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Fuentes de la aplicacion, menos su punto de entrada -->
+    <Compile Include="..\src\**\*.cs" Exclude="..\src\Program.cs;..\src\bin\**;..\src\obj\**">
+      <Link>App\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- Fuentes de las pruebas -->
+    <Compile Include="**\*.cs" Exclude="bin\**;obj\**" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

@@ -1,0 +1,196 @@
+@echo off
+setlocal enabledelayedexpansion
+
+rem ---------------------------------------------------------------------------
+rem  Compila LanShare en un unico .exe, sin instalar nada.
+rem
+rem  Usa el csc.exe que .NET Framework 4.8 ya trae en todos los Windows 10/11.
+rem  No hace falta Visual Studio ni SDK. Resultado: bin\LanShare.exe
+rem ---------------------------------------------------------------------------
+
+rem Anclar el directorio al del propio script. Sin esto, al hacer doble clic el
+rem directorio de trabajo puede ser otro y no se encontraria ningun archivo.
+cd /d "%~dp0"
+
+echo ===========================================================
+echo   LanShare - compilacion
+echo ===========================================================
+echo.
+echo Carpeta: %CD%
+echo.
+
+rem --- Comprobar que estamos en el proyecto y no dentro del ZIP ---
+if not exist "Program.cs" (
+    echo [ERROR] No se encuentra Program.cs en esta carpeta.
+    echo.
+    echo         Causa mas probable: estas ejecutando el script DENTRO del ZIP.
+    echo         Windows deja abrir archivos sin descomprimir, pero el resto del
+    echo         proyecto no esta disponible.
+    echo.
+    echo         Solucion: clic derecho en el ZIP - "Extraer todo", y ejecuta
+    echo         build.cmd desde la carpeta ya extraida.
+    echo.
+    goto :fin
+)
+
+rem --- Localizar el compilador ---
+set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if not exist "%CSC%" set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+if not exist "%CSC%" (
+    echo [ERROR] No se encontro csc.exe de .NET Framework 4.x
+    echo         Buscado en: %WINDIR%\Microsoft.NET\Framework64\v4.0.30319\
+    echo         Comprueba que .NET Framework 4.8 esta instalado.
+    echo.
+    goto :fin
+)
+echo Compilador: %CSC%
+
+rem --- Recopilar fuentes en un archivo de respuesta ---
+rem  Se usa un .rsp en vez de pasar 30 rutas por linea de comandos: evita el
+rem  limite de longitud y los problemas con espacios en las rutas.
+set "RSP=%TEMP%\lanshare_sources_%RANDOM%.rsp"
+if exist "%RSP%" del "%RSP%"
+
+set /a COUNT=0
+for /r %%f in (*.cs) do (
+    set "F=%%f"
+    rem Excluir bin y obj sin lanzar un proceso por archivo
+    if "!F:\bin\=!"=="!F!" if "!F:\obj\=!"=="!F!" (
+        echo "%%f">>"%RSP%"
+        set /a COUNT+=1
+    )
+)
+
+echo Archivos fuente: %COUNT%
+echo.
+
+if %COUNT% LSS 20 (
+    echo [ERROR] Solo se encontraron %COUNT% archivos .cs; el proyecto tiene muchos mas.
+    echo         El proyecto parece incompleto. Vuelve a extraer el ZIP entero.
+    echo.
+    if exist "%RSP%" del "%RSP%"
+    goto :fin
+)
+
+if not exist "icono.ico" (
+    echo [AVISO] No se encuentra icono.ico: el .exe saldra sin icono.
+    echo.
+)
+
+if not exist "bin" mkdir "bin"
+set "LOG=bin\build.log"
+
+echo Compilando...
+echo.
+
+"%CSC%" /nologo ^
+    /target:winexe ^
+    /out:"bin\LanShare.exe" ^
+    /platform:anycpu ^
+    /optimize+ ^
+    /warn:3 ^
+    /debug- ^
+    /reference:System.dll ^
+    /reference:System.Core.dll ^
+    /reference:System.Drawing.dll ^
+    /reference:System.Windows.Forms.dll ^
+    /reference:System.Web.Extensions.dll ^
+    /win32icon:"icono.ico" ^
+    @"%RSP%" > "%LOG%" 2>&1
+
+set "RESULT=%ERRORLEVEL%"
+if exist "%RSP%" del "%RSP%"
+
+rem Mostrar la salida del compilador en pantalla ademas de guardarla
+type "%LOG%"
+echo.
+
+rem Recuento por tipo, para saber de un vistazo la magnitud
+set ERRORES=0
+set AVISOS=0
+for /f %%n in ('findstr /c:": error CS" "%LOG%" 2^>nul ^| find /c /v ""') do set ERRORES=%%n
+for /f %%n in ('findstr /c:": warning CS" "%LOG%" 2^>nul ^| find /c /v ""') do set AVISOS=%%n
+
+if not "%AVISOS%"=="0" call :detallar "warning" "AVISOS (%AVISOS%)"
+
+if not "%RESULT%"=="0" (
+    call :detallar "error" "ERRORES (%ERRORES%)"
+    echo ===========================================================
+    echo   [ERROR] La compilacion fallo con %ERRORES% error^(es^).
+    echo   Salida completa del compilador en: %LOG%
+    echo ===========================================================
+    echo.
+    goto :fin
+)
+
+if not exist "bin\LanShare.exe" (
+    echo [ERROR] El compilador termino sin error pero no genero el .exe
+    echo.
+    goto :fin
+)
+
+rem Un .pdb de una compilacion anterior no sirve de nada al lado del .exe
+if exist "bin\LanShare.pdb" del "bin\LanShare.pdb"
+
+echo ===========================================================
+echo   [OK] Compilacion correcta
+echo ===========================================================
+echo.
+for %%s in ("bin\LanShare.exe") do echo   Archivo : %%~fs
+for %%s in ("bin\LanShare.exe") do echo   Tamano  : %%~zs bytes
+for %%s in ("icono.ico") do echo   De eso, icono incrustado: %%~zs bytes
+echo.
+echo   Ese .exe es autonomo: copialo donde quieras y doble clic.
+echo   Para el modo LAN, clic derecho - Ejecutar como administrador.
+echo.
+
+choice /c SN /n /m "Abrir la carpeta bin ahora? (S/N): "
+if errorlevel 2 goto :fin
+start "" explorer.exe "%CD%\bin"
+
+goto :fin
+
+rem ---------------------------------------------------------------------------
+rem  Muestra cada diagnostico junto a la linea de codigo que lo provoca.
+rem  El compilador ya da archivo, linea y columna; lo que ahorra esto es tener
+rem  que abrir el archivo e ir a buscarla.
+rem ---------------------------------------------------------------------------
+:detallar
+echo -----------------------------------------------------------
+echo   %~2
+echo -----------------------------------------------------------
+for /f "usebackq tokens=1* delims=(" %%a in (`findstr /c:": %~1 CS" "%LOG%" 2^>nul`) do (
+    call :mostrar_uno "%%a" "%%b"
+)
+echo.
+goto :eof
+
+:mostrar_uno
+set "ARCHIVO=%~1"
+set "RESTO=%~2"
+
+rem RESTO llega como  326,13): error CS1501: texto del mensaje
+for /f "tokens=1 delims=," %%n in ("%RESTO%") do set "LINEA=%%n"
+for /f "tokens=1* delims=:" %%x in ("%RESTO%") do set "MENSAJE=%%y"
+
+echo.
+echo   %ARCHIVO% : linea %LINEA%
+echo   %MENSAJE%
+
+if not exist "%ARCHIVO%" goto :eof
+
+rem findstr /n numera TODAS las lineas, incluidas las vacias, asi que la
+rem numeracion coincide con la del compilador. Un 'for /f' normal las saltaria.
+for /f "usebackq tokens=1* delims=:" %%p in (`findstr /n "^^" "%ARCHIVO%" ^| findstr /b /c:"%LINEA%:"`) do (
+    set "CODIGO=%%q"
+    rem La expansion retardada evita que un ^> o un ^& del codigo se interpreten
+    setlocal enabledelayedexpansion
+    echo      ^|  !CODIGO!
+    endlocal
+)
+goto :eof
+
+:fin
+echo.
+pause
+endlocal
