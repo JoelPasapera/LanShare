@@ -15,6 +15,9 @@ namespace LanShare.Core
 
         /// <summary>Puerto HTTPS del sitio; 0 si se sirve solo por HTTP.</summary>
         public int HttpsPort { get; private set; }
+
+        /// <summary>Si sus respuestas llevan COOP y COEP (ver SiteDefinition.CrossOriginIsolation).</summary>
+        public bool CrossOriginIsolation { get; private set; }
         public string Label { get; private set; }
 
         /// <summary>Vacio significa que el sitio se sirve como carpeta.</summary>
@@ -39,6 +42,12 @@ namespace LanShare.Core
 
         public SiteRuntime(int port, bool lanMode, string label, string rootPath,
                            string realRootPath, string startFile, int httpsPort)
+            : this(port, lanMode, label, rootPath, realRootPath, startFile, httpsPort, false)
+        {
+        }
+
+        public SiteRuntime(int port, bool lanMode, string label, string rootPath,
+                           string realRootPath, string startFile, int httpsPort, bool crossOriginIsolation)
         {
             if (string.IsNullOrEmpty(rootPath)) throw new ArgumentNullException("rootPath");
             if (string.IsNullOrEmpty(realRootPath)) throw new ArgumentNullException("realRootPath");
@@ -50,6 +59,7 @@ namespace LanShare.Core
 
             Port = port;
             HttpsPort = httpsPort;
+            CrossOriginIsolation = crossOriginIsolation;
             LanMode = lanMode;
             Label = label ?? "";
             StartFile = startFile ?? "";
@@ -91,7 +101,7 @@ namespace LanShare.Core
         /// <summary>Copia del sitio sin HTTPS: para cuando no se pudo preparar su certificado.</summary>
         public SiteRuntime WithoutHttps()
         {
-            return new SiteRuntime(Port, LanMode, Label, RootPath, RealRootPath, StartFile, 0);
+            return new SiteRuntime(Port, LanMode, Label, RootPath, RealRootPath, StartFile, 0, CrossOriginIsolation);
         }
 
         private static string EnsureTrailingSeparator(string path)

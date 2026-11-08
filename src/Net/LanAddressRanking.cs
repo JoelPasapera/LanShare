@@ -29,12 +29,21 @@ namespace LanShare.Net
 
         /// <summary>
         /// Fragmentos del nombre o la descripcion de adaptadores que no dan a la
-        /// red del movil. Se comparan en minusculas.
+        /// red del movil: maquinas virtuales, contenedores y similares. Se
+        /// comparan en minusculas.
         /// </summary>
         private static readonly string[] VirtualMarkers =
         {
             "virtual", "hyper-v", "vethernet", "vmware", "vmnet", "virtualbox", "vbox",
-            "wsl", "docker", "loopback", "pseudo", "npcap", "bluetooth",
+            "wsl", "docker", "loopback", "pseudo", "npcap", "bluetooth"
+        };
+
+        /// <summary>
+        /// Los de VPN, aparte: tambien cuentan como virtuales, y ademas Windows
+        /// suele clasificar su red como publica sin que eso afecte al movil.
+        /// </summary>
+        private static readonly string[] VpnMarkers =
+        {
             "vpn", "tap-windows", "wintun", "wireguard", "openvpn", "tailscale", "zerotier",
             "hamachi", "anyconnect", "fortinet", "globalprotect", "pangp", "nordlynx"
         };
@@ -103,13 +112,29 @@ namespace LanShare.Net
 
         public static bool LooksVirtual(string adapterName, string description)
         {
-            string text = ((adapterName ?? "") + " " + (description ?? "")).ToLowerInvariant();
+            string text = AdapterText(adapterName, description);
             foreach (string marker in HotspotMarkers)
             {
                 if (text.Contains(marker)) return false;
             }
 
-            foreach (string marker in VirtualMarkers)
+            return ContainsAny(text, VirtualMarkers) || ContainsAny(text, VpnMarkers);
+        }
+
+        /// <summary>Si el adaptador es el de una VPN (OpenVPN, WireGuard, Tailscale...).</summary>
+        public static bool LooksLikeVpn(string adapterName, string description)
+        {
+            return ContainsAny(AdapterText(adapterName, description), VpnMarkers);
+        }
+
+        private static string AdapterText(string adapterName, string description)
+        {
+            return ((adapterName ?? "") + " " + (description ?? "")).ToLowerInvariant();
+        }
+
+        private static bool ContainsAny(string text, string[] markers)
+        {
+            foreach (string marker in markers)
             {
                 if (text.Contains(marker)) return true;
             }

@@ -161,6 +161,10 @@ namespace LanShare.Ui
             ShowQr(CertificateUrlsFor(SelectedSite));
         }
 
+        /// <summary>
+        /// El codigo QR, con aviso si Windows tiene la red como publica: es
+        /// justo cuando el movil no conectaria y pareceria culpa del codigo.
+        /// </summary>
         private void ShowQr(List<UrlChoice> urls)
         {
             if (urls.Count == 0)
@@ -169,7 +173,8 @@ namespace LanShare.Ui
                 return;
             }
 
-            using (QrDialog dialog = new QrDialog(urls))
+            RefreshPublicNetworks();
+            using (QrDialog dialog = new QrDialog(urls, PublicNetworkNotice()))
             {
                 dialog.ShowDialog(this);
             }

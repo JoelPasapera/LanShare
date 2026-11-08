@@ -23,7 +23,7 @@ namespace LanShare.Tests
                 Check.False(settings.RemoteConsole, "consola remota");
                 Check.False(settings.UploadEnabled, "subida de archivos");
                 Check.False(settings.MinimizeToTray, "minimizar a la bandeja");
-                Check.False(settings.CrossOriginIsolation, "aislamiento entre origenes");
+                Check.False(new SiteDefinition().CrossOriginIsolation, "aislamiento entre origenes de un sitio");
             });
 
             runner.Test("lo que ya existia conserva su comportamiento", delegate

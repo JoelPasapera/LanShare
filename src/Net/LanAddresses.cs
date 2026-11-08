@@ -62,7 +62,7 @@ namespace LanShare.Net
 
                 if (!seen.Add(ip)) continue;
                 found.Add(new LanAddress(ip, adapter.Name, adapter.Description,
-                                         adapter.NetworkInterfaceType, gateway));
+                                         adapter.NetworkInterfaceType, gateway, adapter.Id));
             }
         }
 

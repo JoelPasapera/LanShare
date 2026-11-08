@@ -86,14 +86,92 @@ namespace LanShare.Tests
                 Check.Throws(delegate { new ServerOptions(twice, false); }, "dos sitios con el mismo HTTPS");
             });
 
-            runner.Test("el certificado de la autoridad y el aislamiento empiezan apagados", delegate
+            runner.Test("el certificado de la autoridad empieza vacio", delegate
             {
                 List<SiteRuntime> sites = new List<SiteRuntime>();
                 sites.Add(Site(8080, true, 8443));
                 ServerOptions options = new ServerOptions(sites, false);
                 Check.Null(options.HttpsAuthorityCertificate, "sin certificado hasta prepararlo");
                 Check.Null(options.HttpsAuthorityFingerprint, "sin huella");
-                Check.False(options.CrossOriginIsolation, "sin aislamiento entre origenes");
+            });
+
+            runner.Suite("Core / aislamiento entre origenes por sitio");
+
+            runner.Test("cada sitio decide el suyo, apagado de serie", delegate
+            {
+                Check.False(new SiteDefinition().CrossOriginIsolation, "sitio nuevo");
+                Check.False(Site(8080, true, 0).CrossOriginIsolation, "constructor sin el dato");
+
+                SiteRuntime isolated = new SiteRuntime(3000, false, "wasm", @"C:\wasm", @"C:\wasm", "index.html", 0, true);
+                Check.True(isolated.CrossOriginIsolation, "aislado");
+
+                List<SiteRuntime> sites = new List<SiteRuntime>();
+                sites.Add(isolated);
+                sites.Add(Site(8080, true, 8443));
+                ServerOptions options = new ServerOptions(sites, true);
+                Check.True(options.FindByPort(3000).CrossOriginIsolation, "el aislado sigue aislado");
+                Check.False(options.FindByPort(8080).CrossOriginIsolation, "el otro no");
+                Check.False(options.FindByPort(8443).CrossOriginIsolation, "tampoco por su HTTPS");
+            });
+
+            runner.Test("quitar el HTTPS no quita el aislamiento", delegate
+            {
+                // En el PC sigue sirviendo por localhost, que ya es seguro.
+                SiteRuntime both = new SiteRuntime(3000, true, "", @"C:\a\", @"C:\a\", "", 3001, true);
+                Check.True(both.WithoutHttps().CrossOriginIsolation, "conservado");
+            });
+
+            runner.Test("la copia de un sitio lleva su aislamiento", delegate
+            {
+                SiteDefinition original = new SiteDefinition();
+                original.CrossOriginIsolation = true;
+                SiteDefinition copy = original.Clone();
+                Check.True(copy.CrossOriginIsolation, "copiado");
+                copy.CrossOriginIsolation = false;
+                Check.True(original.CrossOriginIsolation, "el original no cambia");
+            });
+
+            runner.Test("se guarda y se lee sitio a sitio", delegate
+            {
+                using (TempTree tree = new TempTree())
+                {
+                    string path = Path.Combine(tree.Root, "settings.json");
+                    AppSettings original = new AppSettings();
+                    SiteDefinition isolated = new SiteDefinition();
+                    isolated.Port = 3000;
+                    isolated.CrossOriginIsolation = true;
+                    SiteDefinition plain = new SiteDefinition();
+                    plain.Port = 8080;
+                    original.Sites.Add(isolated);
+                    original.Sites.Add(plain);
+                    Check.True(original.SaveTo(path), "guardado");
+
+                    AppSettings loaded = AppSettings.LoadFrom(path);
+                    Check.True(loaded.Sites[0].CrossOriginIsolation, "el aislado");
+                    Check.False(loaded.Sites[1].CrossOriginIsolation, "el otro");
+                }
+            });
+
+            runner.Test("REGRESION: la opcion global anterior pasa a todos los sitios", delegate
+            {
+                using (TempTree tree = new TempTree())
+                {
+                    string path = tree.File("settings.json",
+                        "{\"CrossOriginIsolation\":true,\"Sites\":[{\"Port\":3000},{\"Port\":8080}]}");
+                    AppSettings loaded = AppSettings.LoadFrom(path);
+                    Check.True(loaded.Sites[0].CrossOriginIsolation, "primer sitio");
+                    Check.True(loaded.Sites[1].CrossOriginIsolation, "segundo sitio");
+                    Check.False(loaded.CrossOriginIsolation, "la global queda apagada");
+                }
+            });
+
+            runner.Test("sin la opcion global nadie queda aislado", delegate
+            {
+                using (TempTree tree = new TempTree())
+                {
+                    string path = tree.File("settings.json", "{\"Sites\":[{\"Port\":3000}]}");
+                    Check.False(AppSettings.LoadFrom(path).Sites[0].CrossOriginIsolation, "sin aislar");
+                }
             });
 
             runner.Suite("Core / configuracion de HTTPS");

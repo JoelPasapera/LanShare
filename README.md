@@ -28,6 +28,9 @@ instalar nada.
   aislamiento entre orígenes también `SharedArrayBuffer` y WebAssembly con
   hilos. La autoridad solo puede avalar direcciones privadas y nombres
   `.local`. *(Opcional, por sitio)*
+- **Avisa si Windows tiene tu red como pública**, que es cuando el firewall no
+  deja entrar al móvil y parece que el QR no funciona, y la pasa a privada con
+  un botón.
 - **Recarga las páginas al guardar** en todos los dispositivos a la vez; si solo
   cambió una hoja de estilos, la sustituye en caliente sin recargar. *(Opcional)*
 - **Consola remota:** los errores de JavaScript y los `console.log` de las
@@ -103,13 +106,29 @@ siempre con la misma autoridad: el móvil no nota nada. La autoridad dura diez
 años; cuando le queda menos de uno, LanShare crea otra y avisa para que la
 instales de nuevo.
 
-`SharedArrayBuffer`, y con él WebAssembly con hilos, pide además que la página
-esté **aislada de otros orígenes**: márcalo en *Configuración → Desarrollo* y
-LanShare enviará `Cross-Origin-Opener-Policy: same-origin` y
-`Cross-Origin-Embedder-Policy: require-corp`. En el PC basta `localhost`, que
-ya cuenta como seguro; en el móvil hace falta la dirección HTTPS. Con el
-aislamiento, la página no puede cargar recursos de otros dominios que no lo
-autoricen (CORS o `Cross-Origin-Resource-Policy`), por eso viene apagado.
+**Aislamiento entre orígenes, sitio a sitio.** `SharedArrayBuffer`, y con él
+WebAssembly con hilos y los Workers que comparten memoria, exige que la página
+esté aislada de otros orígenes (`crossOriginIsolated`). Marca **Aislar de otros
+orígenes** en *Editar sitio* y ese sitio enviará
+`Cross-Origin-Opener-Policy: same-origin` y
+`Cross-Origin-Embedder-Policy: require-corp`. En el PC funciona al momento,
+porque `localhost` ya cuenta como seguro; en el móvil hace falta además su
+dirección HTTPS, y el diálogo lo recuerda si falta. Es por sitio porque tiene
+un precio: la página ya no puede cargar imágenes, scripts ni iframes de otros
+dominios que no lo autoricen. Con CORS activado (lo está de serie), LanShare
+añade `Cross-Origin-Resource-Policy: cross-origin` a sus respuestas, así que una
+página aislada puede usar los archivos de otro de tus sitios. La tabla de
+sitios marca los aislados.
+
+**Red pública.** La regla de firewall de LanShare solo abre las redes privadas
+y las de dominio, a propósito: en una red pública de verdad (una cafetería) no
+conviene abrir puertos. Pero Windows clasifica así muchas redes de casa, y
+entonces el móvil no conecta y parece que el QR no funciona. Al iniciar con
+algún sitio en red local, LanShare pregunta a Windows cómo tiene la red por la
+que llega el móvil y, si es pública, lo dice y ofrece **pasarla a privada**. El
+mismo aviso, con su botón, aparece en el código QR y en el cuadro de estado.
+Las redes de WSL y de las VPN no cuentan: Windows suele dejarlas como públicas
+y el móvil no entra por ellas.
 
 En *Configuración → HTTPS* están también **Confiar en este PC**, para que
 Chrome y Edge abran `https://localhost` sin aviso en el propio equipo, y
@@ -279,7 +298,7 @@ Lo que conviene destacar:
 | `src/Core/` | Servidor HTTP asíncrono multi-sitio, rutas, contención, MIME, rangos, compresión, caché, QR, recarga, consola remota, subida, ZIP |
 | `src/Https/` | HTTPS local: autoridad de certificación, certificado del servidor, DER, restricciones de nombre, asociaciones en `http.sys` |
 | `src/Identity/` | Sondeo de red, parseo de User-Agent, registro de clientes, fusión de señales |
-| `src/Net/` | Direcciones LAN, firewall, elevación de privilegios, puertos libres |
+| `src/Net/` | Direcciones LAN, firewall, red pública o privada, elevación de privilegios, puertos libres |
 | `src/Platform/` | Inicio con Windows: tarea programada y clave Run |
 | `src/Ui/` | Formulario, diálogos, bandeja, atajos, arrastre de carpetas, cajas de altura ajustable, exportación CSV |
 | `tests/` | Batería de pruebas, sin dependencias externas |
@@ -347,6 +366,18 @@ igual que por HTTP (respuestas en trozos, WebSocket de la recarga), y no hay
 HSTS ni redirección: el puerto HTTP sigue sirviendo, que es por donde el móvil
 descarga el certificado.
 
+**Red pública o privada.** La categoría de cada red la lleva la lista de redes
+de Windows (Network List Manager, `netprofm.dll`), que se consulta por COM: es la
+misma que muestra Configuración y la que mira el firewall. El gestor se crea con
+su interfaz declarada y lo que devuelve (las conexiones, cada red) se llama por
+su tabla de métodos, con las posiciones de `netlistmgr.h`; cada conexión dice
+su adaptador, que se cruza con las direcciones del equipo. Pasar una red a
+privada es `INetwork::SetCategory`, que exige administrador, igual que el modo
+red local. Como son llamadas nativas hechas a mano, van protegidas: si alguna
+vez cerraran LanShare, una marca en disco (`lista-de-redes.pendiente`, junto a
+la configuración) impide repetirlas en los arranques siguientes y el resto
+sigue funcionando.
+
 ## Límites conocidos
 
 - La MAC de los móviles modernos es aleatoria por privacidad. Se detecta y se
@@ -369,9 +400,10 @@ descarga el certificado.
 - El ZIP de una carpeta se genera al vuelo y no anuncia su tamaño, así que el
   navegador no muestra el tiempo restante ni puede reanudar una descarga
   cortada.
-- El modo red local no será alcanzable si Windows tiene la red clasificada como
-  **pública**: la regla de firewall se limita a los perfiles privado y dominio a
-  propósito. Comprueba con `Get-NetConnectionProfile`.
+- Con la red clasificada como **pública**, el modo red local no es alcanzable:
+  la regla de firewall se limita a los perfiles privado y dominio a propósito.
+  LanShare lo avisa y ofrece pasarla a privada; si prefieres dejarla pública
+  (estás en una red ajena), el móvil no podrá conectar.
 
 ## Fabricantes de MAC
 

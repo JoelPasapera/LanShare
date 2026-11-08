@@ -175,6 +175,7 @@ namespace LanShare.Ui
             return before.Enabled != after.Enabled ||
                    before.Port != after.Port ||
                    before.HttpsPort != after.HttpsPort ||
+                   before.CrossOriginIsolation != after.CrossOriginIsolation ||
                    before.LanMode != after.LanMode ||
                    !string.Equals(before.RootPath ?? "", after.RootPath ?? "", StringComparison.OrdinalIgnoreCase) ||
                    !string.Equals(before.StartFile ?? "", after.StartFile ?? "", StringComparison.Ordinal) ||

@@ -287,6 +287,11 @@ namespace LanShare.Core
                     response.AddHeader("Access-Control-Allow-Origin", "*");
                     response.AddHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
                     response.AddHeader("Access-Control-Allow-Headers", "*");
+
+                    // Que una pagina aislada (COEP) de otro sitio o de otro puerto
+                    // pueda incrustar estos recursos sin pedirlos con crossorigin.
+                    // No abre nada que el "*" de arriba no abriera ya.
+                    response.AddHeader("Cross-Origin-Resource-Policy", "cross-origin");
                 }
                 // En desarrollo se prohibe cachear para que nunca veas una
                 // version vieja de tu propio trabajo. En distribucion se deja
@@ -296,10 +301,11 @@ namespace LanShare.Core
                     : "no-store, no-cache, must-revalidate, max-age=0");
                 response.AddHeader("X-Content-Type-Options", "nosniff");
 
-                // Aislamiento entre origenes: junto con una conexion segura
-                // (localhost o HTTPS), da crossOriginIsolated a la pagina. Va en
-                // todas las respuestas porque tambien lo exigen los workers.
-                if (_options.CrossOriginIsolation)
+                // Aislamiento entre origenes, sitio a sitio: junto con una conexion
+                // segura (localhost o HTTPS), da crossOriginIsolated a sus paginas.
+                // Va en todas sus respuestas porque tambien lo exigen los workers.
+                SiteRuntime servedSite = _options.FindByPort(sitePort);
+                if (servedSite != null && servedSite.CrossOriginIsolation)
                 {
                     response.AddHeader("Cross-Origin-Opener-Policy", "same-origin");
                     response.AddHeader("Cross-Origin-Embedder-Policy", "require-corp");

@@ -21,6 +21,8 @@ namespace LanShare.Ui
         private readonly CheckBox _https;
         private readonly TextBox _httpsPort;
         private readonly Label _httpsStatus;
+        private readonly CheckBox _isolation;
+        private readonly Label _isolationStatus;
         private readonly ICollection<int> _otherSitePorts;
         private readonly Timer _statusDelay;
         private readonly ComboBox _startFile;
@@ -231,6 +233,35 @@ namespace LanShare.Ui
             Controls.Add(_httpsStatus);
             y += 26;
 
+            // Aislamiento entre origenes, solo para este sitio: activarlo en
+            // todos rompia los que cargan imagenes o scripts de otros dominios.
+            _isolation = new CheckBox();
+            _isolation.Location = new Point(16, y);
+            _isolation.Size = new Size(width - 32, 22);
+            _isolation.Text = "Aislar de otros origenes (cabeceras COOP y COEP)";
+            _isolation.Checked = site.CrossOriginIsolation;
+            _isolation.CheckedChanged += OnIsolationToggled;
+            Controls.Add(_isolation);
+            y += 24;
+
+            Label isolationHelp = new Label();
+            isolationHelp.Location = new Point(34, y);
+            isolationHelp.Size = new Size(width - 50, 46);
+            isolationHelp.ForeColor = Color.DimGray;
+            isolationHelp.Font = new Font("Segoe UI", 8f);
+            isolationHelp.Text = "Activa crossOriginIsolated: SharedArrayBuffer, WebAssembly con hilos y Workers que " +
+                                 "comparten memoria. A cambio, la pagina ya no puede cargar imagenes, scripts ni " +
+                                 "iframes de otros dominios que no lo autoricen.";
+            Controls.Add(isolationHelp);
+            y += 48;
+
+            _isolationStatus = new Label();
+            _isolationStatus.Location = new Point(34, y);
+            _isolationStatus.Size = new Size(width - 50, 18);
+            _isolationStatus.Font = new Font("Segoe UI", 8f);
+            Controls.Add(_isolationStatus);
+            y += 26;
+
             _enabled = new CheckBox();
             _enabled.Location = new Point(16, y);
             _enabled.Size = new Size(300, 22);
@@ -261,6 +292,7 @@ namespace LanShare.Ui
             UpdatePortStatus();
             _httpsPort.Enabled = _https.Checked;
             UpdateHttpsStatus();
+            UpdateIsolationStatus();
         }
 
         /// <summary>
@@ -333,6 +365,7 @@ namespace LanShare.Ui
             // Cambiar de alcance cambia el prefijo, y con el lo que se prueba.
             UpdatePortStatus();
             UpdateHttpsStatus();
+            UpdateIsolationStatus();
         }
 
         private void OnHttpsPortChanged(object sender, EventArgs e)
@@ -357,6 +390,44 @@ namespace LanShare.Ui
                 }
             }
             UpdateHttpsStatus();
+            UpdateIsolationStatus();
+        }
+
+        private void OnIsolationToggled(object sender, EventArgs e)
+        {
+            UpdateIsolationStatus();
+        }
+
+        /// <summary>
+        /// crossOriginIsolated exige, ademas de las cabeceras, una conexion
+        /// segura: localhost lo es, pero http://192.168.x.x no. Se dice donde
+        /// funcionara para que nadie lo busque por HTTP en el movil.
+        /// </summary>
+        private void UpdateIsolationStatus()
+        {
+            if (_isolation == null || _isolationStatus == null) return;
+
+            if (!_isolation.Checked)
+            {
+                _isolationStatus.Text = "";
+                return;
+            }
+
+            if (!_lan.Checked)
+            {
+                _isolationStatus.Text = "Funciona en este equipo, en http://localhost.";
+                _isolationStatus.ForeColor = Color.FromArgb(20, 120, 45);
+            }
+            else if (_https.Checked)
+            {
+                _isolationStatus.Text = "En el movil, abre la direccion https:// del sitio; por http:// no se activa.";
+                _isolationStatus.ForeColor = Color.FromArgb(20, 120, 45);
+            }
+            else
+            {
+                _isolationStatus.Text = "En el movil solo se activa por HTTPS: marca tambien Servir por HTTPS.";
+                _isolationStatus.ForeColor = Color.FromArgb(176, 96, 0);
+            }
         }
 
         /// <summary>
@@ -614,6 +685,7 @@ namespace LanShare.Ui
             site.RootPath = Path.GetFullPath(root);
             site.Port = port;
             site.HttpsPort = httpsPort;
+            site.CrossOriginIsolation = _isolation.Checked;
             site.LanMode = _lan.Checked;
             site.Label = _label.Text.Trim();
             site.Enabled = _enabled.Checked;

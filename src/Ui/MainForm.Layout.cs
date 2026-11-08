@@ -44,6 +44,9 @@ namespace LanShare.Ui
             "Doble clic o F2 para editar, clic derecho para mas. Arrastra aqui una carpeta para anadirla.";
         private const string SitesHintRunning =
             "En marcha: los cambios se aplican al momento. Intro abre el sitio y Ctrl+C copia su URL.";
+
+        /// <summary>Marca de la columna Aislado (COOP y COEP): una palomita, sin idioma.</summary>
+        private const string IsolatedMark = "\u2713";
         private Button _startButton;
         private GroupBox _statusGroup;
         private TextBox _statusTextBox;
@@ -231,10 +234,11 @@ namespace LanShare.Ui
             _sitesList.MultiSelect = false;
             _sitesList.HideSelection = false;
             _sitesList.Columns.Add("Puerto", 70);
-            _sitesList.Columns.Add("Carpeta", 300);
+            _sitesList.Columns.Add("Carpeta", 250);
             _sitesList.Columns.Add("Archivo", 124);
             _sitesList.Columns.Add("Alcance", 104);
             _sitesList.Columns.Add("HTTPS", 56);
+            _sitesList.Columns.Add("Aislado", 58);
             _sitesList.Columns.Add("Etiqueta", 120);
             _sitesList.Columns.Add("URL local", 216);   // ocupa el resto del ancho
             _sitesList.ItemChecked += OnSiteCheckedChanged;

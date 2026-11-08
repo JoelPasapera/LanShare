@@ -113,8 +113,14 @@
     <Compile Include="Net\LanAddress.cs" />
     <Compile Include="Net\LanAddressRanking.cs" />
     <Compile Include="Net\LanAddresses.cs" />
+    <Compile Include="Net\NetworkCategory.cs" />
+    <Compile Include="Net\NetworkConnectionInfo.cs" />
+    <Compile Include="Net\NetworkListManager.cs" />
     <Compile Include="Net\PortAvailability.cs" />
+    <Compile Include="Net\PublicNetwork.cs" />
+    <Compile Include="Net\PublicNetworks.cs" />
     <Compile Include="Platform\AutoStart.cs" />
+    <Compile Include="Platform\CrashGuard.cs" />
     <Compile Include="Platform\ScheduledTaskXml.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
@@ -129,6 +135,7 @@
     <Compile Include="Ui\MainForm.Features.cs" />
     <Compile Include="Ui\MainForm.Https.cs" />
     <Compile Include="Ui\MainForm.Layout.cs" />
+    <Compile Include="Ui\MainForm.Network.cs" />
     <Compile Include="Ui\MainForm.Panes.cs" />
     <Compile Include="Ui\MainForm.Restart.cs" />
     <Compile Include="Ui\MainForm.Shortcuts.cs" />
@@ -137,6 +144,7 @@
     <Compile Include="Ui\MainForm.cs" />
     <Compile Include="Ui\ModernFolderPicker.cs" />
     <Compile Include="Ui\NativeUi.cs" />
+    <Compile Include="Ui\NetworkNotice.cs" />
     <Compile Include="Ui\PaneEdges.cs" />
     <Compile Include="Ui\PaneGrip.cs" />
     <Compile Include="Ui\PaneHeights.cs" />

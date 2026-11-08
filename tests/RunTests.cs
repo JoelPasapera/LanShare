@@ -60,12 +60,15 @@ namespace LanShare.Tests
             // --- Net ---
             PortAvailabilityTests.Register(runner);
             LanAddressRankingTests.Register(runner);
+            PublicNetworksTests.Register(runner);
+            NetworkListManagerTests.Register(runner);
 
             // --- Ui ---
             PaneHeightsTests.Register(runner);
 
             // --- Arranque y plataforma ---
             PlatformTests.Register(runner);
+            CrashGuardTests.Register(runner);
 
             int exitCode = runner.Report();
 

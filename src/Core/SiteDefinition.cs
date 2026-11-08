@@ -23,6 +23,14 @@ namespace LanShare.Core
         /// </summary>
         public int HttpsPort = 0;
 
+        /// <summary>
+        /// Envia COOP y COEP en las respuestas de este sitio: sus paginas
+        /// quedan aisladas de otros origenes (crossOriginIsolated), que es lo
+        /// que piden SharedArrayBuffer y WebAssembly con hilos. Apagado de serie:
+        /// impide cargar recursos de otros dominios que no lo autoricen.
+        /// </summary>
+        public bool CrossOriginIsolation = false;
+
         /// <summary>Etiqueta opcional; si esta vacia se muestra el nombre de la carpeta.</summary>
         public string Label = "";
 
@@ -67,6 +75,7 @@ namespace LanShare.Core
             copy.RootPath = RootPath;
             copy.LanMode = LanMode;
             copy.HttpsPort = HttpsPort;
+            copy.CrossOriginIsolation = CrossOriginIsolation;
             copy.Label = Label;
             copy.StartFile = StartFile;
             return copy;

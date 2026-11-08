@@ -20,13 +20,23 @@ namespace LanShare.Ui
         private readonly ComboBox _selector;
         private readonly PictureBox _preview;
         private readonly Label _urlLabel;
+        private readonly NetworkNotice _notice;
 
+        private Label _noticeLabel;
+        private Button _noticeButton;
         private Bitmap _current;
 
         public QrDialog(List<UrlChoice> urls)
+            : this(urls, null)
+        {
+        }
+
+        /// <param name="notice">Aviso sobre la red con su arreglo (red publica, por ejemplo); null si no hay.</param>
+        public QrDialog(List<UrlChoice> urls, NetworkNotice notice)
         {
             if (urls == null || urls.Count == 0) throw new ArgumentException("urls");
             _urls = urls;
+            _notice = notice;
 
             Text = "Acceso desde el movil";
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -38,6 +48,10 @@ namespace LanShare.Ui
 
             int width = 420;
             int y = 16;
+
+            // El aviso va arriba del todo: si la red no deja entrar al movil, da
+            // igual lo bien que se lea el codigo.
+            if (notice != null) y = AddNotice(notice, width, y);
 
             // El selector solo aparece si hay donde elegir (varias direcciones o
             // varios sitios): con una sola URL seria una lista de un elemento.
@@ -107,6 +121,69 @@ namespace LanShare.Ui
             ClientSize = new Size(width, y + 28 + 16);
 
             UpdatePreview();
+        }
+
+        /// <summary>Franja de aviso con su boton; devuelve donde sigue el dialogo.</summary>
+        private int AddNotice(NetworkNotice notice, int width, int y)
+        {
+            Panel banner = new Panel();
+            banner.Location = new Point(16, y);
+            banner.Size = new Size(width - 32, 70);
+            banner.BackColor = Color.FromArgb(255, 244, 214);
+            banner.BorderStyle = BorderStyle.FixedSingle;
+
+            _noticeLabel = new Label();
+            _noticeLabel.Location = new Point(8, 6);
+            _noticeLabel.Size = new Size(banner.Width - 18, 30);
+            _noticeLabel.Font = new Font("Segoe UI", 8.5f);
+            _noticeLabel.ForeColor = Color.FromArgb(110, 70, 0);
+            _noticeLabel.Text = notice.Text;
+            banner.Controls.Add(_noticeLabel);
+
+            _noticeButton = new Button();
+            _noticeButton.Size = new Size(140, 25);
+            _noticeButton.Location = new Point(banner.Width - 10 - _noticeButton.Width, 38);
+            _noticeButton.Text = notice.FixLabel;
+            _noticeButton.UseVisualStyleBackColor = true;
+            _noticeButton.Click += OnNoticeClick;
+            banner.Controls.Add(_noticeButton);
+
+            Controls.Add(banner);
+            return y + banner.Height + 10;
+        }
+
+        /// <summary>
+        /// Aplica el arreglo del aviso y deja el resultado a la vista: si se
+        /// pudo, el codigo ya sirve sin cerrar el dialogo.
+        /// </summary>
+        private void OnNoticeClick(object sender, EventArgs e)
+        {
+            string error;
+            Cursor previous = Cursor.Current;
+            Cursor.Current = Cursors.WaitCursor;
+            try
+            {
+                error = _notice.Fix();
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+            finally
+            {
+                Cursor.Current = previous;
+            }
+
+            if (error == null)
+            {
+                _noticeLabel.Text = "Listo: la red ya es privada y el movil puede conectar.";
+                _noticeLabel.ForeColor = Color.FromArgb(20, 120, 45);
+                _noticeButton.Visible = false;
+                return;
+            }
+
+            _noticeLabel.Text = "No se pudo: " + error;
+            _noticeLabel.ForeColor = Color.Firebrick;
         }
 
         /// <summary>Cuantos equipos distintos aparecen en las URL (no cuantos sitios).</summary>

@@ -18,11 +18,18 @@
   trae) y la asociación con el puerto se hace con la API de `http.sys`, sin
   `netsh`. Desde *Configuración → HTTPS* se ve la huella, se puede confiar en
   la autoridad en el propio PC y borrarlo todo. Apagado de serie.
-- **Aislamiento entre orígenes** (Configuración → Desarrollo): envía
+- **Aislamiento entre orígenes por sitio** (*Editar sitio*): envía
   `Cross-Origin-Opener-Policy` y `Cross-Origin-Embedder-Policy` para que las
-  páginas puedan usar `SharedArrayBuffer` y WebAssembly con hilos, en
-  `localhost` o por HTTPS. Apagado de serie, porque bloquea los recursos de
-  otros dominios que no lo autoricen.
+  páginas puedan usar `SharedArrayBuffer`, WebAssembly con hilos y Workers con
+  memoria compartida, en `localhost` o por HTTPS. Es por sitio y viene apagado
+  porque bloquea los recursos de otros dominios que no lo autoricen. Con CORS
+  activado, LanShare añade `Cross-Origin-Resource-Policy: cross-origin` para que
+  una página aislada pueda usar los archivos de otro sitio.
+- **Aviso de red pública.** Si Windows tiene como pública la red por la que
+  llega el móvil, el firewall no le deja entrar y parece que el QR no funciona.
+  LanShare lo detecta al iniciar (con la lista de redes de Windows, por COM),
+  lo avisa en el estado y en el código QR y ofrece pasarla a privada con un
+  botón. Las redes de WSL y de las VPN no cuentan.
 - **Recarga automática al guardar.** Vigila la carpeta de cada sitio y recarga
   las páginas abiertas en todos los dispositivos a la vez. Si solo cambió una
   hoja de estilos, la sustituye en caliente sin recargar. Va por WebSocket para
@@ -153,7 +160,7 @@
 
 ### Pruebas
 
-De 244 a 514 pruebas. Lo nuevo con más peso: el analizador multipart con
+De 244 a 539 pruebas. Lo nuevo con más peso: el analizador multipart con
 lecturas troceadas de 1 a 70.000 bytes y casi-delimitadores dentro del
 contenido, Horspool contrastado con la búsqueda ingenua, saneado de nombres
 (rutas, dispositivos reservados, puntos finales, caracteres invisibles, emojis
@@ -174,7 +181,10 @@ cadena validada por el verificador de Windows (que rechaza una IP o un dominio
 de Internet), la clave del servidor de ida y vuelta por PFX, el tamaño de las
 estructuras de `http.sys`, qué certificados y asociaciones se limpian sin
 tocar los de otro usuario del equipo, qué direcciones entran en el
-certificado, la página del certificado y el control de origen por HTTPS.
+certificado, la página del certificado y el control de origen por HTTPS; el
+aislamiento entre orígenes de cada sitio (también al migrar la opción global
+anterior) y cuándo avisar de una red pública, más una lectura real de la lista
+de redes de Windows que contrasta cada conexión con los adaptadores que ve .NET.
 
 ## 2.0
 

@@ -167,6 +167,7 @@ namespace LanShare.Ui
                     item.SubItems.Add(site.StartFileDisplay);
                     item.SubItems.Add(site.LanMode ? "Red local" : "Solo este equipo");
                     item.SubItems.Add(site.HttpsPort > 0 ? site.HttpsPort.ToString(CultureInfo.InvariantCulture) : "");
+                    item.SubItems.Add(site.CrossOriginIsolation ? IsolatedMark : "");
                     item.SubItems.Add(site.Label);
                     item.SubItems.Add("http://localhost:" + site.Port + "/");
                     item.Tag = site;
@@ -529,6 +530,11 @@ namespace LanShare.Ui
                 _detailTextBox.Text = "Selecciona un cliente para ver su detalle completo.";
             }
 
+            // La categoria de la red se mira antes de pintar el estado, que la
+            // avisa; solo importa si algun sitio se sirve a la red local.
+            if (ServesLan(runtimes)) RefreshPublicNetworks();
+            else _publicNetworks = new List<PublicNetwork>();
+
             BuildStatusText(runtimes);
             RefreshLogFilter(runtimes);
             ApplyFirewallRules(runtimes);
@@ -540,11 +546,14 @@ namespace LanShare.Ui
             foreach (SiteRuntime runtime in runtimes)
             {
                 string https = runtime.HttpsPrefix != null ? " y " + runtime.HttpsPrefix : "";
-                _log.Write("INFO", "Sitio en " + runtime.Prefix + https + " [Raiz real: " + runtime.RealRootPath + "]");
+                string isolated = runtime.CrossOriginIsolation ? ", aislado de otros origenes (COOP/COEP)" : "";
+                _log.Write("INFO", "Sitio en " + runtime.Prefix + https + isolated +
+                                   " [Raiz real: " + runtime.RealRootPath + "]");
             }
 
             NotifyServerState(true, runtimes.Count);
             ReportHttpsProblems(quiet, httpsProblems, httpsWarnings);
+            OfferPrivateNetworks(!quiet || (_restarting && Visible));
 
             // Arranque automatico u oculto: un aviso en la bandeja en vez de
             // abrir una pestana por proyecto en cada inicio de sesion.
@@ -594,7 +603,6 @@ namespace LanShare.Ui
             options.DistributionMode = _settings.DistributionMode;
             options.EnableLiveReload = _settings.LiveReload;
             options.EnableRemoteConsole = _settings.RemoteConsole;
-            options.CrossOriginIsolation = _settings.CrossOriginIsolation;
             options.UploadFolder = _settings.GetUploadFolder();
             options.UploadMaxBytes = (long)_settings.UploadMaxMegabytes * 1024 * 1024;
             options.EnableUpload = _settings.UploadEnabled;
@@ -755,7 +763,8 @@ namespace LanShare.Ui
             int httpsPort = site.HttpsPort;
             if (httpsPort < 1 || httpsPort > 65535 || httpsPort == site.Port) httpsPort = 0;
 
-            return new SiteRuntime(site.Port, site.LanMode, site.Label, basePath, realRoot, site.StartFile, httpsPort);
+            return new SiteRuntime(site.Port, site.LanMode, site.Label, basePath, realRoot, site.StartFile, httpsPort,
+                                   site.CrossOriginIsolation);
         }
 
         private void BuildStatusText(IList<SiteRuntime> runtimes)
@@ -797,9 +806,13 @@ namespace LanShare.Ui
                 }
 
                 if (runtime.HttpsPort > 0) estado.Append("   https:").Append(runtime.HttpsPort);
+                if (runtime.CrossOriginIsolation) estado.Append("   aislado");
 
                 estado.AppendLine();
             }
+
+            string networkWarning = PublicNetworkStatusLine();
+            if (networkWarning.Length > 0) estado.AppendLine().Append(networkWarning);
 
             _statusTextBox.Text = estado.ToString();
             _copyLanButton.Enabled = _lanUrls.Count > 0;
@@ -1117,7 +1130,6 @@ namespace LanShare.Ui
             _server.Options.EnableCompression = _settings.Compression;
             _server.Options.DistributionMode = _settings.DistributionMode;
             _server.Options.CorsEnabled = _settings.Cors;
-            _server.Options.CrossOriginIsolation = _settings.CrossOriginIsolation;
             _server.InjectProbe = _settings.InjectProbe;
             ApplyDevFeatures();
 
@@ -1226,11 +1238,7 @@ namespace LanShare.Ui
         private void OnQrClick(object sender, EventArgs e)
         {
             if (_lanUrls.Count == 0) return;
-
-            using (QrDialog dialog = new QrDialog(_lanUrls))
-            {
-                dialog.ShowDialog(this);
-            }
+            ShowQr(_lanUrls);
         }
 
         private void OnReprobeClick(object sender, EventArgs e)

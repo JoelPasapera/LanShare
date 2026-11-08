@@ -28,7 +28,6 @@ namespace LanShare.Ui
         private readonly CheckBox _cors;
         private readonly CheckBox _liveReload;
         private readonly CheckBox _remoteConsole;
-        private readonly CheckBox _isolation;
         private readonly CheckBox _upload;
         private readonly TextBox _uploadFolder;
         private readonly NumericUpDown _uploadMax;
@@ -141,11 +140,6 @@ namespace LanShare.Ui
                 "que se anade al principio de las paginas HTML al servirlas; tus archivos no se tocan.\r\n" +
                 "No se anade en las paginas que abres en este PC, donde ya tienes la consola del navegador. " +
                 "Al activarla, recarga en el movil las paginas que ya estuvieran abiertas.");
-            _isolation = AddOption(dev, ref py, current.CrossOriginIsolation,
-                "Aislar las paginas de otros origenes (COOP y COEP)",
-                "Lo exigen SharedArrayBuffer y WebAssembly con hilos, junto con una conexion segura: localhost " +
-                "en este PC, la direccion HTTPS del sitio en el movil. A cambio, la pagina no puede cargar " +
-                "imagenes, scripts ni iframes de otros dominios que no lo autoricen.");
 
             // -------------------------------------------------------- Subida
             TabPage upload = NewPage(tabs, "Subida");
@@ -266,7 +260,6 @@ namespace LanShare.Ui
             target.Cors = _cors.Checked;
             target.LiveReload = _liveReload.Checked;
             target.RemoteConsole = _remoteConsole.Checked;
-            target.CrossOriginIsolation = _isolation.Checked;
             target.UploadEnabled = _upload.Checked;
             target.UploadMaxMegabytes = (int)_uploadMax.Value;
             target.InjectProbe = _probe.Checked;

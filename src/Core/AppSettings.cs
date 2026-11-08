@@ -74,8 +74,9 @@ namespace LanShare.Core
         public bool RemoteConsole = false;
 
         /// <summary>
-        /// Envia Cross-Origin-Opener-Policy y Cross-Origin-Embedder-Policy para
-        /// que las paginas puedan usar SharedArrayBuffer y WebAssembly con hilos.
+        /// Opcion global de aislamiento entre origenes de una version anterior.
+        /// Ahora es de cada sitio (SiteDefinition.CrossOriginIsolation): solo
+        /// se conserva para migrarla al leer y ya no se usa.
         /// </summary>
         public bool CrossOriginIsolation = false;
 
@@ -175,6 +176,7 @@ namespace LanShare.Core
                     loaded.UploadMaxMegabytes = 2048;
 
                 loaded.MigrateSingleSite();
+                loaded.MigrateGlobalIsolation();
                 return loaded;
             }
             catch (Exception)
@@ -252,6 +254,21 @@ namespace LanShare.Core
             Sites.Add(site);
 
             RootPath = "";
+        }
+
+        /// <summary>
+        /// Quien activo el aislamiento cuando era global lo tenia en todos sus
+        /// sitios: se le conserva asi, ahora sitio a sitio.
+        /// </summary>
+        private void MigrateGlobalIsolation()
+        {
+            if (!CrossOriginIsolation) return;
+
+            foreach (SiteDefinition site in Sites)
+            {
+                if (site != null) site.CrossOriginIsolation = true;
+            }
+            CrossOriginIsolation = false;
         }
 
         /// <summary>Sube la carpeta al principio del historial, sin duplicados.</summary>

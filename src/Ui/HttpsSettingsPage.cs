@@ -60,7 +60,7 @@ namespace LanShare.Ui
                 "de este equipo y con ella firma el certificado del servidor. Instala la autoridad una vez en cada " +
                 "movil (clic derecho en un sitio con HTTPS, codigo QR del certificado) y el navegador tratara tus " +
                 "paginas como seguras: WebGPU, service workers, camara. Para SharedArrayBuffer y WebAssembly " +
-                "con hilos, activa ademas el aislamiento de la pestana Desarrollo.\r\n" +
+                "con hilos, marca ademas Aislar de otros origenes en Editar sitio.\r\n" +
                 "La autoridad solo puede avalar direcciones de la red local y nombres .local: aunque alguien robara " +
                 "su clave, no serviria para suplantar webs de Internet. Y no se puede robar facilmente: no es " +
                 "exportable y vive en el almacen de claves de tu usuario de Windows.");

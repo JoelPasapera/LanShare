@@ -23,7 +23,6 @@ namespace LanShare.Core
         private volatile bool _enableLiveReload;
         private volatile bool _enableUpload;
         private volatile bool _enableRemoteConsole;
-        private volatile bool _crossOriginIsolation;
         private volatile string _uploadFolder = "";
         private long _uploadMaxBytes = 2048L * 1024 * 1024;
 
@@ -129,18 +128,6 @@ namespace LanShare.Core
         {
             get { return _enableRemoteConsole; }
             set { _enableRemoteConsole = value; }
-        }
-
-        /// <summary>
-        /// Envia COOP y COEP en cada respuesta: las paginas quedan aisladas de
-        /// otros origenes (crossOriginIsolated), que es lo que exigen
-        /// SharedArrayBuffer y WebAssembly con hilos. Apagado de serie: impide
-        /// cargar recursos de otros dominios que no lo autoricen.
-        /// </summary>
-        public bool CrossOriginIsolation
-        {
-            get { return _crossOriginIsolation; }
-            set { _crossOriginIsolation = value; }
         }
 
         /// <summary>Carpeta donde se guardan las subidas; nunca la del sitio.</summary>
